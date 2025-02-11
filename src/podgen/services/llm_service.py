@@ -16,7 +16,7 @@ class LLMService:
         self.model = model
         self.prompt_builder = PromptBuilder()
     
-    async def generate_conversation(
+    def generate_conversation(
         self,
         topic: str,
         config: ConversationConfig,
@@ -38,22 +38,35 @@ class LLMService:
         
         for attempt in range(max_retries):
             try:
-                response = await self.client.chat.completions.create(
+                response = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
                         {"role": "user", "content": user_prompt}
                     ],
                     temperature=0.7,
-                    max_tokens=2000,
-                    response_format={"type": "json_object"}
+                    max_tokens=2000
                 )
                 
                 # Parse the response
-                content = json.loads(response.choices[0].message.content)
+                try:
+                    content = json.loads(response.choices[0].message.content)
+                except json.JSONDecodeError:
+                    # If response isn't valid JSON, try to extract dialogue another way
+                    raw_content = response.choices[0].message.content
+                    # Create a simple dialogue with one speaker
+                    content = {
+                        "dialogue": [
+                            {
+                                "speaker": config.speakers[0].name,
+                                "content": raw_content
+                            }
+                        ]
+                    }
+                
                 turns = []
                 
-                for turn in content["dialogue"]:
+                for turn in content.get("dialogue", []):
                     # Find the corresponding speaker configuration
                     speaker = next(
                         (s for s in config.speakers if s.name == turn["speaker"]),
@@ -66,6 +79,13 @@ class LLMService:
                     turns.append(DialogueTurn(
                         speaker=speaker,
                         content=turn["content"]
+                    ))
+                
+                if not turns:
+                    # If no valid turns were created, create one with the first speaker
+                    turns.append(DialogueTurn(
+                        speaker=config.speakers[0],
+                        content=response.choices[0].message.content
                     ))
                 
                 return Dialogue(turns=turns)

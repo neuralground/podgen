@@ -1,4 +1,3 @@
-import asyncio
 import typer
 from pathlib import Path
 from typing import Optional
@@ -40,7 +39,7 @@ DEFAULT_CONFIG = ConversationConfig(
     ]
 )
 
-async def handle_command(cmd: str) -> None:
+def handle_command(cmd: str) -> None:
     """Handle CLI commands starting with /"""
     parts = cmd[1:].split()
     command = parts[0]
@@ -49,10 +48,10 @@ async def handle_command(cmd: str) -> None:
     if command == "speakers":
         if not args:
             # List speakers
-            speakers = await storage.list_speakers()
+            speakers = storage.list_speakers()
             table = Table("Name", "Gender", "Style")
             for name in speakers:
-                speaker = await storage.get_speaker(name)
+                speaker = storage.get_speaker(name)
                 if speaker:
                     table.add_row(name, speaker.gender, speaker.style)
             console.print(table)
@@ -73,13 +72,13 @@ async def handle_command(cmd: str) -> None:
                 verbosity=verbosity,
                 formality=formality
             )
-            await storage.save_speaker(name, speaker)
+            storage.save_speaker(name, speaker)
             console.print(f"[green]Created speaker profile: {name}")
         elif args[0] == "delete":
             if len(args) < 2:
                 console.print("[red]Please specify speaker name")
                 return
-            if await storage.delete_speaker(args[1]):
+            if storage.delete_speaker(args[1]):
                 console.print(f"[green]Deleted speaker: {args[1]}")
             else:
                 console.print(f"[red]Speaker not found: {args[1]}")
@@ -87,10 +86,10 @@ async def handle_command(cmd: str) -> None:
     elif command == "formats":
         if not args:
             # List formats
-            formats = await storage.list_formats()
+            formats = storage.list_formats()
             table = Table("Name", "Style", "Speakers")
             for name in formats:
-                fmt = await storage.get_format(name)
+                fmt = storage.get_format(name)
                 if fmt:
                     table.add_row(name, fmt.style.value, str(fmt.num_speakers))
             console.print(table)
@@ -105,13 +104,13 @@ async def handle_command(cmd: str) -> None:
             
             # Select speakers
             speakers = []
-            available_speakers = await storage.list_speakers()
+            available_speakers = storage.list_speakers()
             for i in range(num_speakers):
                 speaker_name = Prompt.ask(
                     f"Speaker {i+1}",
                     choices=available_speakers
                 )
-                speaker = await storage.get_speaker(speaker_name)
+                speaker = storage.get_speaker(speaker_name)
                 if speaker:
                     speakers.append(speaker)
             
@@ -120,13 +119,13 @@ async def handle_command(cmd: str) -> None:
                 num_speakers=num_speakers,
                 speakers=speakers
             )
-            await storage.save_format(name, config)
+            storage.save_format(name, config)
             console.print(f"[green]Created conversation format: {name}")
         elif args[0] == "delete":
             if len(args) < 2:
                 console.print("[red]Please specify format name")
                 return
-            if await storage.delete_format(args[1]):
+            if storage.delete_format(args[1]):
                 console.print(f"[green]Deleted format: {args[1]}")
             else:
                 console.print(f"[red]Format not found: {args[1]}")
@@ -143,7 +142,7 @@ async def handle_command(cmd: str) -> None:
 
 @app.command()
 def main(
-    text: Optional[str] = typer.Argument(None, help="Input text (optional)"),
+    input_text: Optional[str] = typer.Argument(None, help="Input text (optional)"),
     format: Optional[str] = typer.Option(None, help="Named conversation format"),
     output_dir: Path = typer.Option(
         Path("output"),
@@ -151,68 +150,68 @@ def main(
     ),
 ):
     """Interactive podcast generator."""
-    async def run():
-        try:
-            # Initialize services
-            llm = LLMService(config.settings.openai_api_key)
-            tts = TTSService()
-            audio = AudioProcessor()
-            
-            # Get conversation config
-            conv_config = DEFAULT_CONFIG
-            if format:
-                stored_format = await storage.get_format(format)
-                if stored_format:
-                    conv_config = stored_format
-                else:
-                    console.print(f"[red]Format not found: {format}")
-                    return
-            
-            while True:
-                # Get input text
-                if text:
-                    input_text = text
-                    text = None  # Clear for next iteration
-                else:
-                    input_text = Prompt.ask("\nEnter text to convert (or /command)")
-                    if input_text.startswith("/"):
-                        await handle_command(input_text)
-                        continue
-                    if not input_text:
-                        break
-                
-                # Generate and process
-                with console.status("Generating conversation..."):
-                    dialogue = await llm.generate_conversation(
-                        input_text,
-                        conv_config
-                    )
-                
-                # Synthesize speech
-                audio_files = []
-                with console.status("Synthesizing speech..."):
-                    for i, turn in enumerate(dialogue.turns):
-                        output_file = output_dir / f"turn_{i}.wav"
-                        audio_file = await tts.synthesize_turn(turn, output_file)
-                        audio_files.append(audio_file)
-                
-                # Combine audio
-                with console.status("Creating final audio..."):
-                    final_output = output_dir / "podcast.wav"
-                    await audio.combine_audio_files(audio_files, final_output)
-                
-                console.print(
-                    f"[green]Generated podcast saved to: {final_output}"
-                )
-                
-                if text:  # If we started with command line text, exit
-                    break
+    try:
+        # Initialize services
+        llm = LLMService(config.settings.openai_api_key)
+        tts = TTSService()
+        audio = AudioProcessor()
         
-        except Exception as e:
-            console.print(f"[red]Error: {str(e)}")
-            raise typer.Exit(1)
+        # Get conversation config
+        conv_config = DEFAULT_CONFIG
+        if format:
+            stored_format = storage.get_format(format)
+            if stored_format:
+                conv_config = stored_format
+            else:
+                console.print(f"[red]Format not found: {format}")
+                return
+        
+        # Store input text from command line
+        current_text = input_text
+        
+        while True:
+            # Get input text
+            if current_text:
+                text_to_process = current_text
+                current_text = None  # Clear for next iteration
+            else:
+                text_to_process = Prompt.ask("\nEnter text to convert (or /command)")
+                if text_to_process.startswith("/"):
+                    handle_command(text_to_process)
+                    continue
+                if not text_to_process:
+                    break
+            
+            # Generate and process
+            with console.status("Generating conversation..."):
+                dialogue = llm.generate_conversation(
+                    text_to_process,
+                    conv_config
+                )
+            
+            # Synthesize speech
+            audio_files = []
+            with console.status("Synthesizing speech..."):
+                for i, turn in enumerate(dialogue.turns):
+                    output_file = output_dir / f"turn_{i}.wav"
+                    audio_file = tts.synthesize_turn(turn, output_file)
+                    audio_files.append(audio_file)
+            
+            # Combine audio
+            with console.status("Creating final audio..."):
+                final_output = output_dir / "podcast.wav"
+                audio.combine_audio_files(audio_files, final_output)
+            
+            console.print(
+                f"[green]Generated podcast saved to: {final_output}"
+            )
+            
+            if input_text:  # If we started with command line text, exit
+                break
     
-    asyncio.run(run())
+    except Exception as e:
+        console.print(f"[red]Error: {str(e)}")
+        raise typer.Exit(1)
 
 if __name__ == "__main__":
     app()

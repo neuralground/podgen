@@ -1,5 +1,5 @@
 import json
-import asyncio
+import threading
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 from ..models.conversation_style import SpeakerPersonality
@@ -11,7 +11,7 @@ class JSONStorage(StorageBackend):
         self.data_dir = data_dir
         self.speakers_file = data_dir / "speakers.json"
         self.formats_file = data_dir / "formats.json"
-        self.lock = asyncio.Lock()
+        self.lock = threading.Lock()
         
         # Initialize storage files
         self.data_dir.mkdir(exist_ok=True)
@@ -19,57 +19,67 @@ class JSONStorage(StorageBackend):
             if not file.exists():
                 file.write_text("{}")
     
-    async def _read_json(self, file: Path) -> Dict[str, Any]:
-        async with self.lock:
+    def _read_json(self, file: Path) -> Dict[str, Any]:
+        """Read JSON data from file with thread safety."""
+        with self.lock:
             return json.loads(file.read_text())
     
-    async def _write_json(self, file: Path, data: Dict[str, Any]) -> None:
-        async with self.lock:
+    def _write_json(self, file: Path, data: Dict[str, Any]) -> None:
+        """Write JSON data to file with thread safety."""
+        with self.lock:
             file.write_text(json.dumps(data, indent=2))
     
-    async def save_speaker(self, name: str, profile: SpeakerPersonality) -> None:
-        data = await self._read_json(self.speakers_file)
-        data[name] = profile.dict()
-        await self._write_json(self.speakers_file, data)
+    def save_speaker(self, name: str, profile: SpeakerPersonality) -> None:
+        """Save a speaker profile."""
+        data = self._read_json(self.speakers_file)
+        data[name] = profile.model_dump()
+        self._write_json(self.speakers_file, data)
     
-    async def get_speaker(self, name: str) -> Optional[SpeakerPersonality]:
-        data = await self._read_json(self.speakers_file)
+    def get_speaker(self, name: str) -> Optional[SpeakerPersonality]:
+        """Get a speaker profile by name."""
+        data = self._read_json(self.speakers_file)
         if name in data:
             return SpeakerPersonality(**data[name])
         return None
     
-    async def list_speakers(self) -> List[str]:
-        data = await self._read_json(self.speakers_file)
+    def list_speakers(self) -> List[str]:
+        """List all speaker names."""
+        data = self._read_json(self.speakers_file)
         return list(data.keys())
     
-    async def delete_speaker(self, name: str) -> bool:
-        data = await self._read_json(self.speakers_file)
+    def delete_speaker(self, name: str) -> bool:
+        """Delete a speaker profile."""
+        data = self._read_json(self.speakers_file)
         if name in data:
             del data[name]
-            await self._write_json(self.speakers_file, data)
+            self._write_json(self.speakers_file, data)
             return True
         return False
     
-    async def save_format(self, name: str, config: ConversationConfig) -> None:
-        data = await self._read_json(self.formats_file)
-        data[name] = config.dict()
-        await self._write_json(self.formats_file, data)
+    def save_format(self, name: str, config: ConversationConfig) -> None:
+        """Save a conversation format configuration."""
+        data = self._read_json(self.formats_file)
+        data[name] = config.model_dump()
+        self._write_json(self.formats_file, data)
     
-    async def get_format(self, name: str) -> Optional[ConversationConfig]:
-        data = await self._read_json(self.formats_file)
+    def get_format(self, name: str) -> Optional[ConversationConfig]:
+        """Get a conversation format by name."""
+        data = self._read_json(self.formats_file)
         if name in data:
             return ConversationConfig(**data[name])
         return None
     
-    async def list_formats(self) -> List[str]:
-        data = await self._read_json(self.formats_file)
+    def list_formats(self) -> List[str]:
+        """List all format names."""
+        data = self._read_json(self.formats_file)
         return list(data.keys())
     
-    async def delete_format(self, name: str) -> bool:
-        data = await self._read_json(self.formats_file)
+    def delete_format(self, name: str) -> bool:
+        """Delete a conversation format."""
+        data = self._read_json(self.formats_file)
         if name in data:
             del data[name]
-            await self._write_json(self.formats_file, data)
+            self._write_json(self.formats_file, data)
             return True
         return False
 

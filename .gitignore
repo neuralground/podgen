@@ -85,3 +85,8 @@ celerybeat-schedule
 # MacOS system files
 .DS_Store
 
+# VITS model cache
+.cache/podgen/
+
+# test data folder
+/data/

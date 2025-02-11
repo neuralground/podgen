@@ -4,10 +4,14 @@ Configuration management for podgen.
 
 from pathlib import Path
 from typing import Optional
-from pydantic import BaseSettings, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import Field
 
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
+    
+    # API Settings
+    openai_api_key: str = Field("", env="OPENAI_API_KEY")
     
     # Model Settings
     default_llm_model: str = Field("gpt-4", env="DEFAULT_LLM_MODEL")
@@ -26,14 +30,16 @@ class Settings(BaseSettings):
     # Paths
     output_dir: Path = Field(Path("output"), env="OUTPUT_DIR")
     cache_dir: Path = Field(Path(".cache"), env="CACHE_DIR")
+    data_dir: Path = Field(Path("data"), env="DATA_DIR")
     
     # Logging
     log_level: str = Field("INFO", env="LOG_LEVEL")
     log_file: Optional[Path] = Field(None, env="LOG_FILE")
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8"
+    )
 
 # Create global settings instance
 settings = Settings()
@@ -42,4 +48,5 @@ def init_directories() -> None:
     """Initialize required directories."""
     settings.output_dir.mkdir(exist_ok=True)
     settings.cache_dir.mkdir(exist_ok=True)
+    settings.data_dir.mkdir(exist_ok=True)
 

@@ -22,6 +22,29 @@ class PromptBuilder:
             for s in config.speakers
         ])
         
+        topic_focus = ('Stay very focused on the main topic' if config.topic_focus > 1.5 
+                      else 'Allow natural topic evolution' if config.topic_focus < 0.5 
+                      else 'Maintain reasonable topic focus')
+        
+        interaction = ('Encourage deep interaction between speakers' if config.interaction_depth > 1.5
+                      else 'Keep interactions minimal' if config.interaction_depth < 0.5
+                      else 'Balance monologue and interaction')
+        
+        json_example = '''
+{
+  "dialogue": [
+    {
+      "speaker": "Host",
+      "content": "Welcome to our discussion..."
+    },
+    {
+      "speaker": "Guest",
+      "content": "Thank you for having me..."
+    }
+  ]
+}
+'''
+
         return f"""Generate a natural conversation between {config.num_speakers} speakers discussing the provided topic.
 
 Conversation style: {style_prompts[config.style]}
@@ -30,16 +53,11 @@ Speakers and their characteristics:
 {speakers_desc}
 
 Additional parameters:
-- Topic focus: {'Stay very focused on the main topic' if config.topic_focus > 1.5 
-               else 'Allow natural topic evolution' if config.topic_focus < 0.5 
-               else 'Maintain reasonable topic focus'}
-- Interaction: {'Encourage deep interaction between speakers' if config.interaction_depth > 1.5
-               else 'Keep interactions minimal' if config.interaction_depth < 0.5
-               else 'Balance monologue and interaction'}
+- Topic focus: {topic_focus}
+- Interaction: {interaction}
 
-Format the output as a JSON array of dialogue turns, where each turn has:
-- speaker: The name of the speaker
-- content: The spoken content
+You must format your response as a JSON object with a "dialogue" array. Each item in the dialogue array should have a "speaker" and "content" field. Here's the exact format to use:
+{json_example}
 
 Keep the conversation natural and engaging while respecting each speaker's personality."""
 
@@ -50,11 +68,11 @@ Keep the conversation natural and engaging while respecting each speaker's perso
 
 {topic}
 
-Ensure the discussion:
-1. Progresses naturally from introduction through development to conclusion
-2. Maintains appropriate roles for each speaker
-3. Includes natural transitions and interactions
-4. Covers key aspects of the topic thoroughly
-5. Feels authentic rather than scripted"""
-
+Remember to:
+1. Progress naturally from introduction through development to conclusion
+2. Maintain appropriate roles for each speaker
+3. Include natural transitions and interactions
+4. Cover key aspects of the topic thoroughly
+5. Keep it authentic rather than scripted
+6. Format the output as JSON with a "dialogue" array"""
 
