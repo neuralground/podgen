@@ -1,7 +1,8 @@
+# src/podgen/services/conversation.py
 from typing import List
 import logging
 from ..models.dialogue import DialogueTurn, Dialogue
-from ..models.speaker import Speaker
+from ..models.conversation_style import SpeakerPersonality
 
 logger = logging.getLogger(__name__)
 
@@ -10,20 +11,29 @@ class ConversationGenerator:
     
     def __init__(self):
         self.speakers = {
-            "host": Speaker(
+            "host": SpeakerPersonality(
                 name="Alex",
                 voice_id="p335",
-                personality="Knowledgeable and engaging host who guides the conversation"
+                gender="neutral",
+                style="Knowledgeable and engaging host who guides the conversation",
+                verbosity=1.0,
+                formality=1.0
             ),
-            "expert": Speaker(
+            "expert": SpeakerPersonality(
                 name="Dr. Sarah",
                 voice_id="p347",
-                personality="Technical expert who provides detailed explanations"
+                gender="female",
+                style="Technical expert who provides detailed explanations",
+                verbosity=1.2,
+                formality=1.5
             ),
-            "questioner": Speaker(
+            "questioner": SpeakerPersonality(
                 name="Mike",
                 voice_id="p326",
-                personality="Asks insightful questions to clarify complex topics"
+                gender="male",
+                style="Asks insightful questions to clarify complex topics",
+                verbosity=0.8,
+                formality=0.7
             )
         }
     

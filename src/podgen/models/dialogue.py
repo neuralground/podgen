@@ -1,10 +1,11 @@
+# src/podgen/models/dialogue.py
 from typing import List
 from pydantic import BaseModel
-from .speaker import Speaker
+from .conversation_style import SpeakerPersonality
 
 class DialogueTurn(BaseModel):
     """Represents a single turn in the conversation."""
-    speaker: Speaker
+    speaker: SpeakerPersonality
     content: str
     
     class Config:

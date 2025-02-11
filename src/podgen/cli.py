@@ -3,142 +3,128 @@ from pathlib import Path
 from typing import Optional
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
-from rich.table import Table
-from .models.conversation_style import ConversationStyle, SpeakerPersonality
-from .models.conversation_config import ConversationConfig
-from .services.llm_service import LLMService
-from .services.tts import TTSService
-from .services.audio import AudioProcessor
+import readline
+import os
+import glob
+
+from .help import CommandHelp
+from .storage import DocumentStore, handle_doc_command
 from .storage.json_storage import JSONStorage
 from . import config
 
 app = typer.Typer()
 console = Console()
+
+# Initialize services
 storage = JSONStorage(Path(config.settings.data_dir))
+doc_store = DocumentStore(Path(config.settings.data_dir) / "documents.db")
+help_system = CommandHelp()
 
-DEFAULT_CONFIG = ConversationConfig(
-    style=ConversationStyle.CASUAL,
-    num_speakers=2,
-    speakers=[
-        SpeakerPersonality(
-            name="Host",
-            voice_id="p335",
-            gender="neutral",
-            style="Engaging and friendly host",
-            verbosity=1.0,
-            formality=0.8
-        ),
-        SpeakerPersonality(
-            name="Guest",
-            voice_id="p347",
-            gender="neutral",
-            style="Knowledgeable guest",
-            verbosity=1.0,
-            formality=1.0
-        )
-    ]
-)
+class PodgenCompleter:
+    """Handles command and file path completion"""
+    
+    def __init__(self):
+        self.commands = {
+            "help": None,
+            "add": self._complete_path,
+            "list": None,
+            "remove": None,
+            "bye": None,
+            "speakers": None,
+            "formats": None
+        }
+        self.current_candidates = []
 
-def handle_command(cmd: str) -> None:
-    """Handle CLI commands starting with /"""
+    def complete(self, text: str, state: int) -> Optional[str]:
+        """Main completion method"""
+        if state == 0:
+            # This is the first time for this text,
+            # so build a match list
+            line = readline.get_line_buffer()
+            begidx = readline.get_begidx()
+            endidx = readline.get_endidx()
+            
+            if begidx == 0:
+                # Complete command
+                self.current_candidates = [
+                    f"/{cmd} " for cmd in self.commands
+                    if cmd.startswith(text[1:] if text.startswith('/') else text)
+                ]
+            else:
+                # Complete arguments
+                command = line.split()[0][1:]  # Remove leading slash
+                if command in self.commands and self.commands[command]:
+                    self.current_candidates = self.commands[command](text)
+                else:
+                    self.current_candidates = []
+                    
+        try:
+            return self.current_candidates[state]
+        except IndexError:
+            return None
+
+    def _complete_path(self, text: str) -> list[str]:
+        """Complete file paths"""
+        if not text:
+            completions = glob.glob('*')
+        else:
+            # Expand ~ to home directory
+            if text.startswith('~'):
+                text = os.path.expanduser(text)
+            
+            # If text ends with separator, list contents
+            if text.endswith(os.sep):
+                completions = glob.glob(text + '*')
+            else:
+                completions = glob.glob(text + '*')
+        
+        # Add separator to directories
+        return [
+            f"{c}{os.sep if os.path.isdir(c) else ' '}"
+            for c in completions
+        ]
+
+def setup_readline():
+    """Configure readline with our completer"""
+    completer = PodgenCompleter()
+    readline.set_completer(completer.complete)
+    readline.set_completer_delims(' \t\n;')
+    readline.parse_and_bind('tab: complete')
+
+def handle_command(cmd: str) -> bool:
+    """
+    Handle CLI commands starting with /
+    Returns False to exit the CLI, True to continue
+    """
     parts = cmd[1:].split()
+    if not parts:
+        return True
+        
     command = parts[0]
     args = parts[1:]
     
-    if command == "speakers":
-        if not args:
-            # List speakers
-            speakers = storage.list_speakers()
-            table = Table("Name", "Gender", "Style")
-            for name in speakers:
-                speaker = storage.get_speaker(name)
-                if speaker:
-                    table.add_row(name, speaker.gender, speaker.style)
-            console.print(table)
-        elif args[0] == "new":
-            # Create new speaker
-            name = Prompt.ask("Speaker name")
-            gender = Prompt.ask("Gender", choices=["male", "female", "neutral"])
-            voice_id = Prompt.ask("Voice ID")
-            style = Prompt.ask("Speaking style")
-            verbosity = float(Prompt.ask("Verbosity (0.1-2.0)", default="1.0"))
-            formality = float(Prompt.ask("Formality (0.1-2.0)", default="1.0"))
-            
-            speaker = SpeakerPersonality(
-                name=name,
-                voice_id=voice_id,
-                gender=gender,
-                style=style,
-                verbosity=verbosity,
-                formality=formality
-            )
-            storage.save_speaker(name, speaker)
-            console.print(f"[green]Created speaker profile: {name}")
-        elif args[0] == "delete":
-            if len(args) < 2:
-                console.print("[red]Please specify speaker name")
-                return
-            if storage.delete_speaker(args[1]):
-                console.print(f"[green]Deleted speaker: {args[1]}")
-            else:
-                console.print(f"[red]Speaker not found: {args[1]}")
-    
+    if command == "help":
+        if len(args) > 0:
+            help_system.show_help(console, category=args[0] if len(args[0]) > 1 else None, 
+                                         command=args[0] if len(args[0]) == 1 else None)
+        else:
+            help_system.show_help(console)
+    elif command == "bye":
+        console.print("Goodbye!")
+        return False
+    elif command in ["add", "list", "remove"]:
+        handle_doc_command(cmd, doc_store, console)
+    elif command == "speakers":
+        # Handler for speaker commands
+        handle_speaker_command(cmd, storage, console)
     elif command == "formats":
-        if not args:
-            # List formats
-            formats = storage.list_formats()
-            table = Table("Name", "Style", "Speakers")
-            for name in formats:
-                fmt = storage.get_format(name)
-                if fmt:
-                    table.add_row(name, fmt.style.value, str(fmt.num_speakers))
-            console.print(table)
-        elif args[0] == "new":
-            # Create new format
-            name = Prompt.ask("Format name")
-            style = Prompt.ask(
-                "Style",
-                choices=[s.value for s in ConversationStyle]
-            )
-            num_speakers = int(Prompt.ask("Number of speakers", default="2"))
-            
-            # Select speakers
-            speakers = []
-            available_speakers = storage.list_speakers()
-            for i in range(num_speakers):
-                speaker_name = Prompt.ask(
-                    f"Speaker {i+1}",
-                    choices=available_speakers
-                )
-                speaker = storage.get_speaker(speaker_name)
-                if speaker:
-                    speakers.append(speaker)
-            
-            config = ConversationConfig(
-                style=ConversationStyle(style),
-                num_speakers=num_speakers,
-                speakers=speakers
-            )
-            storage.save_format(name, config)
-            console.print(f"[green]Created conversation format: {name}")
-        elif args[0] == "delete":
-            if len(args) < 2:
-                console.print("[red]Please specify format name")
-                return
-            if storage.delete_format(args[1]):
-                console.print(f"[green]Deleted format: {args[1]}")
-            else:
-                console.print(f"[red]Format not found: {args[1]}")
-    
+        # Handler for format commands
+        handle_format_command(cmd, storage, console)
     else:
         console.print(f"[red]Unknown command: {command}")
-        console.print("Available commands:")
-        console.print("  /speakers - List speaker profiles")
-        console.print("  /speakers new - Create new speaker profile")
-        console.print("  /speakers delete <name> - Delete speaker profile")
-        console.print("  /formats - List conversation formats")
-        console.print("  /formats new - Create new conversation format")
-        console.print("  /formats delete <name> - Delete conversation format")
+        console.print("Use /help to see available commands")
+    
+    return True
 
 @app.command()
 def main(
@@ -152,59 +138,36 @@ def main(
     """Interactive podcast generator."""
     try:
         # Initialize services
-        llm = LLMService(config.settings.openai_api_key)
-        tts = TTSService()
-        audio = AudioProcessor()
-        
-        # Get conversation config
-        conv_config = DEFAULT_CONFIG
-        if format:
-            stored_format = storage.get_format(format)
-            if stored_format:
-                conv_config = stored_format
-            else:
-                console.print(f"[red]Format not found: {format}")
-                return
+        setup_readline()
         
         # Store input text from command line
         current_text = input_text
         
         while True:
-            # Get input text
-            if current_text:
-                text_to_process = current_text
-                current_text = None  # Clear for next iteration
-            else:
-                text_to_process = Prompt.ask("\nEnter text to convert (or /command)")
+            try:
+                # Get input text
+                if current_text:
+                    text_to_process = current_text
+                    current_text = None  # Clear for next iteration
+                else:
+                    try:
+                        text_to_process = Prompt.ask("\npodgen")
+                    except EOFError:  # Handle Ctrl+D
+                        console.print("\nGoodbye!")
+                        break
+                        
                 if text_to_process.startswith("/"):
-                    handle_command(text_to_process)
+                    if not handle_command(text_to_process):
+                        break
                     continue
                 if not text_to_process:
-                    break
-            
-            # Generate and process
-            with console.status("Generating conversation..."):
-                dialogue = llm.generate_conversation(
-                    text_to_process,
-                    conv_config
-                )
-            
-            # Synthesize speech
-            audio_files = []
-            with console.status("Synthesizing speech..."):
-                for i, turn in enumerate(dialogue.turns):
-                    output_file = output_dir / f"turn_{i}.wav"
-                    audio_file = tts.synthesize_turn(turn, output_file)
-                    audio_files.append(audio_file)
-            
-            # Combine audio
-            with console.status("Creating final audio..."):
-                final_output = output_dir / "podcast.wav"
-                audio.combine_audio_files(audio_files, final_output)
-            
-            console.print(
-                f"[green]Generated podcast saved to: {final_output}"
-            )
+                    continue
+                
+                # Process the text...
+                
+            except KeyboardInterrupt:  # Handle Ctrl+C
+                console.print("\nOperation cancelled")
+                continue
             
             if input_text:  # If we started with command line text, exit
                 break
