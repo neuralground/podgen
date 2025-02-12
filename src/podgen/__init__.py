@@ -3,8 +3,8 @@ Podgen - AI-powered conversational podcast generator.
 """
 
 __version__ = "0.1.0"
-__author__ = "Your Name"
-__email__ = "your.email@example.com"
+__author__ = "Bob Blainey"
+__email__ = "bob@neuralground.group"
 
 from . import models
 from . import services
