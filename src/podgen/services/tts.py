@@ -6,13 +6,14 @@ import logging
 import time
 import shutil
 import platform
+import asyncio
 from ..models.dialogue import DialogueTurn
 
 logger = logging.getLogger(__name__)
 
 class TTSEngine:
     """Base class for TTS engines"""
-    def synthesize(self, text: str, output_path: Path) -> bool:
+    async def synthesize(self, text: str, output_path: Path) -> bool:
         raise NotImplementedError()
 
 class Pyttsx3Engine(TTSEngine):
@@ -32,14 +33,20 @@ class Pyttsx3Engine(TTSEngine):
         self.engine.setProperty('rate', 175)
         self.engine.setProperty('volume', 1.0)
     
-    def synthesize(self, text: str, output_path: Path) -> bool:
+    async def synthesize(self, text: str, output_path: Path) -> bool:
         try:
-            self.engine.save_to_file(text, str(output_path))
-            self.engine.runAndWait()
+            # Run pyttsx3 in a thread pool since it's blocking
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._do_synthesize, text, output_path)
             return output_path.exists() and output_path.stat().st_size > 0
         except Exception as e:
             logger.warning(f"pyttsx3 synthesis failed: {e}")
             return False
+            
+    def _do_synthesize(self, text: str, output_path: Path):
+        """Synchronous synthesis method to run in thread pool."""
+        self.engine.save_to_file(text, str(output_path))
+        self.engine.runAndWait()
 
 class SayEngine(TTSEngine):
     """macOS 'say' command TTS engine"""
@@ -55,7 +62,7 @@ class SayEngine(TTSEngine):
                 logger.warning(f"Failed to get macOS voices: {e}")
                 self.voices = []
     
-    def synthesize(self, text: str, output_path: Path, voice: str = 'Alex') -> bool:
+    async def synthesize(self, text: str, output_path: Path, voice: str = 'Alex') -> bool:
         if not self.available:
             return False
             
@@ -65,8 +72,14 @@ class SayEngine(TTSEngine):
                 cmd.extend(['-v', voice])
             cmd.append(text)
             
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            return result.returncode == 0
+            # Run say command in a thread pool
+            loop = asyncio.get_running_loop()
+            process = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True)
+            )
+            return process.returncode == 0
+            
         except Exception as e:
             logger.warning(f"macOS 'say' command failed: {e}")
             return False
@@ -76,17 +89,21 @@ class EspeakEngine(TTSEngine):
     def __init__(self):
         self.available = shutil.which('espeak-ng') is not None
     
-    def synthesize(self, text: str, output_path: Path) -> bool:
+    async def synthesize(self, text: str, output_path: Path) -> bool:
         if not self.available:
             return False
             
         try:
-            result = subprocess.run(
-                ['espeak-ng', '-w', str(output_path), text],
-                capture_output=True,
-                text=True
+            cmd = ['espeak-ng', '-w', str(output_path), text]
+            
+            # Run espeak command in a thread pool
+            loop = asyncio.get_running_loop()
+            process = await loop.run_in_executor(
+                None,
+                lambda: subprocess.run(cmd, capture_output=True, text=True)
             )
-            return result.returncode == 0
+            return process.returncode == 0
+            
         except Exception as e:
             logger.warning(f"espeak-ng synthesis failed: {e}")
             return False
@@ -117,12 +134,12 @@ class TTSService:
         ]
         logger.info(f"Available TTS engines: {', '.join(available_engines)}")
 
-    def synthesize_turn(
+    async def synthesize_turn(
         self,
         turn: DialogueTurn,
         output_path: Path,
         speaker_id: Optional[str] = None
-    ) -> Path:
+    ) -> Optional[Path]:
         """
         Synthesize speech using available engines.
         
@@ -132,10 +149,7 @@ class TTSService:
             speaker_id: Optional specific speaker ID
             
         Returns:
-            Path to the generated audio file
-            
-        Raises:
-            RuntimeError: If all TTS engines fail
+            Path to the generated audio file or None if all engines fail
         """
         # Ensure output directory exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -149,18 +163,22 @@ class TTSService:
         # Try each engine in order until one succeeds
         for engine in self.engines:
             try:
-                if engine.synthesize(turn.content, temp_path):
+                success = await engine.synthesize(turn.content, temp_path)
+                if success:
                     logger.info(f"Successfully synthesized using {engine.__class__.__name__}")
                     
                     # Convert aiff to wav if needed
                     if temp_path.suffix == '.aiff':
                         try:
-                            subprocess.run([
+                            # Run ffmpeg in a thread pool
+                            loop = asyncio.get_running_loop()
+                            await loop.run_in_executor(None, lambda: subprocess.run([
                                 'ffmpeg', '-y',
+                                '-loglevel', 'error',  # Only show errors
                                 '-i', str(temp_path),
                                 '-acodec', 'pcm_s16le',
                                 str(output_path)
-                            ], check=True)
+                            ], check=True, capture_output=True, text=True))
                             temp_path.unlink()  # Remove temporary aiff file
                         except Exception as e:
                             logger.error(f"Failed to convert aiff to wav: {e}")
@@ -171,5 +189,6 @@ class TTSService:
             except Exception as e:
                 logger.warning(f"Engine {engine.__class__.__name__} failed: {e}")
         
-        raise RuntimeError("All TTS engines failed to synthesize speech")
+        logger.error("All TTS engines failed to synthesize speech")
+        return None
 

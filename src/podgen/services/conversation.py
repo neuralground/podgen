@@ -1,16 +1,17 @@
-# src/podgen/services/conversation.py
 from typing import List, Dict, Any, Optional
 import logging
+import random
 from ..models.dialogue import DialogueTurn, Dialogue
 from ..models.conversation_style import SpeakerPersonality
-from ..models.conversation_config import ConversationConfig
+from .llm_service import LLMService
 
 logger = logging.getLogger(__name__)
 
 class ConversationGenerator:
-    """Generates conversational dialogue from input text."""
+    """Generates natural dialogue using LLM capabilities."""
     
     def __init__(self):
+        self.llm = LLMService()
         self.default_speakers = {
             "host": SpeakerPersonality(
                 name="Alex",
@@ -38,87 +39,145 @@ class ConversationGenerator:
             )
         }
     
-    def generate_dialogue(
+    async def generate_dialogue(
         self,
-        content: Dict[str, Any],
+        analysis: Dict[str, Any],
         config: Optional[Dict[str, Any]] = None
     ) -> Dialogue:
         """
-        Generate a conversation from analyzed content.
-        
-        Args:
-            content: Dictionary containing:
-                - main_topics: List of main topics
-                - key_points: List of key points
-                - relationships: Dict of topic relationships
-                - suggested_structure: List of discussion segments
-            config: Optional configuration overrides
-            
-        Returns:
-            A complete dialogue
+        Generate a natural conversation using LLM.
         """
-        # Get topics and key points
-        topics = content.get('main_topics', [])
-        key_points = content.get('key_points', [])
-        structure = content.get('suggested_structure', [])
+        if not analysis:
+            logger.warning("No analysis provided, using default structure")
+            analysis = {
+                'main_topics': ['General Discussion'],
+                'key_points': [{'point': 'Overview'}],
+                'suggested_structure': [
+                    {
+                        'segment': 'discussion',
+                        'topics': ['General Discussion'],
+                        'key_points': ['Overview']
+                    }
+                ]
+            }
         
-        # This is a placeholder implementation
-        # Will be replaced with LLM-based generation
-        turns = [
-            DialogueTurn(
-                speaker=self.default_speakers["host"],
-                content=f"Welcome to today's discussion about {', '.join(topics[:2])}..."
-            ),
-            DialogueTurn(
-                speaker=self.default_speakers["questioner"],
-                content="Could you break down the main points for us?"
+        # Get or create conversation configuration
+        config = config or {}
+        style = config.get('style', 'casual')
+        speakers = list(self.default_speakers.values())
+        
+        try:
+            # Generate initial dialogue
+            dialogue_turns = await self.llm.generate_dialogue(
+                analysis,
+                [s.dict() for s in speakers],
+                style
             )
-        ]
-        
-        # Add discussion of key points
-        for point in key_points[:3]:  # Limit to 3 key points for placeholder
-            turns.append(
-                DialogueTurn(
-                    speaker=self.default_speakers["expert"],
-                    content=f"An important aspect to consider is {point}"
+            
+            if not dialogue_turns:
+                logger.warning("LLM returned no dialogue turns, using fallback")
+                return await self._generate_basic_dialogue(analysis, speakers)
+            
+            # Convert to DialogueTurn objects
+            turns = []
+            for turn in dialogue_turns:
+                # Validate turn data
+                if not isinstance(turn, dict) or 'speaker' not in turn or 'content' not in turn:
+                    logger.warning(f"Invalid turn format: {turn}")
+                    continue
+                    
+                # Find matching speaker
+                speaker = next(
+                    (s for s in speakers if s.name == turn['speaker']),
+                    speakers[0]  # Default to first speaker if not found
                 )
-            )
+                
+                turns.append(DialogueTurn(
+                    speaker=speaker,
+                    content=turn['content']
+                ))
+            
+            # Ensure we have at least some dialogue
+            if not turns:
+                logger.warning("No valid turns created, using fallback")
+                return await self._generate_basic_dialogue(analysis, speakers)
+            
+            # If configured, generate follow-up responses
+            if config.get('interactive', True):
+                enhanced_turns = []
+                for i, turn in enumerate(turns):
+                    enhanced_turns.append(turn)
+                    
+                    # Randomly add follow-ups (with decreasing probability)
+                    if i < len(turns) - 1 and random.random() < 0.3 * (1 - i/len(turns)):
+                        try:
+                            # Generate follow-up
+                            context = [
+                                {
+                                    'speaker': t.speaker.name,
+                                    'content': t.content
+                                }
+                                for t in turns[max(0, i-2):i+2]
+                            ]
+                            
+                            next_speaker = turns[i + 1].speaker
+                            follow_up = await self.llm.generate_follow_up(
+                                context,
+                                analysis['main_topics'][0],
+                                next_speaker.dict()
+                            )
+                            
+                            if follow_up:
+                                enhanced_turns.append(DialogueTurn(
+                                    speaker=next_speaker,
+                                    content=follow_up
+                                ))
+                        except Exception as e:
+                            logger.warning(f"Failed to generate follow-up: {e}")
+                            continue
+                
+                turns = enhanced_turns
+            
+            return Dialogue(turns=turns)
+            
+        except Exception as e:
+            logger.error(f"Dialogue generation failed: {e}")
+            return await self._generate_basic_dialogue(analysis, speakers)
+    
+    async def _generate_basic_dialogue(
+        self,
+        analysis: Dict[str, Any],
+        speakers: List[SpeakerPersonality]
+    ) -> Dialogue:
+        """Generate basic dialogue without LLM (fallback method)."""
+        topics = analysis.get('main_topics', ['General Discussion'])
+        key_points = analysis.get('key_points', [{'point': 'Overview'}])
         
-        # Add follow-up questions and discussion
-        if len(key_points) > 0:
-            turns.extend([
-                DialogueTurn(
-                    speaker=self.default_speakers["questioner"],
-                    content=f"That's interesting. Could you elaborate on how {key_points[0]} relates to {topics[0] if topics else 'our topic'}?"
-                ),
-                DialogueTurn(
-                    speaker=self.default_speakers["expert"],
-                    content=f"Let me explain the connection..."
-                )
-            ])
+        host = speakers[0]
+        experts = speakers[1:] or [speakers[0]]
         
-        # Close the discussion
-        turns.append(
-            DialogueTurn(
-                speaker=self.default_speakers["host"],
-                content="Thank you for those insights. Before we wrap up, what are the key takeaways for our listeners?"
-            )
-        )
+        turns = []
         
-        if key_points:
-            turns.append(
-                DialogueTurn(
-                    speaker=self.default_speakers["expert"],
-                    content=f"The main things to remember are: {', '.join(str(p) for p in key_points[:2])}"
-                )
-            )
+        # Add introduction
+        turns.append(DialogueTurn(
+            speaker=host,
+            content=f"Welcome to our discussion about {', '.join(topics)}."
+        ))
         
-        turns.append(
-            DialogueTurn(
-                speaker=self.default_speakers["host"],
-                content="Thank you for joining us today. This has been a fascinating discussion."
-            )
-        )
+        # Add main points
+        for point in key_points:
+            speaker = experts[len(turns) % len(experts)]
+            point_text = point.get('point', 'this topic') if isinstance(point, dict) else str(point)
+            turns.append(DialogueTurn(
+                speaker=speaker,
+                content=f"An important point to consider is {point_text}."
+            ))
+        
+        # Add conclusion
+        turns.append(DialogueTurn(
+            speaker=host,
+            content="Thank you for joining us for this fascinating discussion."
+        ))
         
         return Dialogue(turns=turns)
 

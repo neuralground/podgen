@@ -1,8 +1,8 @@
-# src/podgen/services/podcast_generator.py
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
 import logging
 import asyncio
+
 from ..storage.document_store import DocumentStore
 from ..services.content_analyzer import ContentAnalyzer
 from ..services.conversation import ConversationGenerator
@@ -35,25 +35,15 @@ class PodcastGenerator:
         doc_ids: List[int],
         output_path: Path,
         progress_callback: Optional[ProgressCallback] = None,
-        config: Dict[str, Any] = None
+        config: Optional[Dict[str, Any]] = None
     ) -> Tuple[str, Path]:
         """
         Generate a complete podcast from documents.
-        
-        Args:
-            doc_ids: List of document IDs to include
-            output_path: Where to save the final podcast
-            progress_callback: Optional callback for progress updates (0.0 to 1.0)
-            config: Optional generation configuration
-            
-        Returns:
-            Tuple of (transcript text, audio file path)
         """
         try:
             # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
-            # Create progress tracker
             def report_progress(stage: str, stage_progress: float, weight: float):
                 if progress_callback:
                     # Calculate overall progress based on stage weights
@@ -64,32 +54,60 @@ class PodcastGenerator:
                         'processing': 0.1
                     }
                     
-                    # Get base progress for completed stages
                     base_progress = sum(
                         stage_weights[s] 
                         for s in stage_weights 
                         if s < stage
                     )
                     
-                    # Add current stage progress
                     total_progress = base_progress + (stage_progress * weight)
                     progress_callback(total_progress)
             
+            # Validate document IDs
+            if not doc_ids:
+                raise ValueError("No document IDs provided")
+                
             # Analyze content (20%)
             logger.info("Analyzing documents...")
             report_progress('analysis', 0.0, 0.2)
             
-            analysis = await self.analyzer.analyze_documents(doc_ids)
+            try:
+                analysis = await self.analyzer.analyze_documents(doc_ids)
+                if not analysis:
+                    raise ValueError("Content analysis returned no results")
+            except Exception as e:
+                logger.error(f"Analysis failed: {e}")
+                # Create minimal analysis structure
+                analysis = {
+                    'main_topics': ['Document Overview'],
+                    'key_points': [{'point': 'Key document contents', 'source': 'Analysis'}],
+                    'suggested_structure': [
+                        {
+                            'segment': 'overview',
+                            'topics': ['Document Overview'],
+                            'key_points': ['Document contents'],
+                            'format': 'discussion'
+                        }
+                    ]
+                }
+            
             report_progress('analysis', 1.0, 0.2)
             
             # Generate conversation (30%)
             logger.info("Generating conversation...")
             report_progress('conversation', 0.0, 0.3)
             
-            dialogue = self.conversation.generate_dialogue(
-                analysis['suggested_structure'],
-                config
-            )
+            try:
+                dialogue = await self.conversation.generate_dialogue(
+                    analysis,
+                    config or {}
+                )
+                if not dialogue or not dialogue.turns:
+                    raise ValueError("Dialogue generation returned no results")
+            except Exception as e:
+                logger.error(f"Dialogue generation failed: {e}")
+                raise
+            
             report_progress('conversation', 1.0, 0.3)
             
             # Build transcript
@@ -100,28 +118,49 @@ class PodcastGenerator:
             report_progress('synthesis', 0.0, 0.4)
             
             audio_segments = []
+            total_turns = len(dialogue.turns)
+            
             for i, turn in enumerate(dialogue.turns):
-                segment = await self.tts.synthesize_turn(
-                    turn,
-                    output_path.parent / f"segment_{i}.wav"
-                )
-                audio_segments.append(segment)
-                report_progress('synthesis', (i + 1) / len(dialogue.turns), 0.4)
+                try:
+                    segment = await self.tts.synthesize_turn(
+                        turn,
+                        output_path.parent / f"segment_{i}.wav"
+                    )
+                    if segment and segment.exists():
+                        audio_segments.append(segment)
+                except Exception as e:
+                    logger.error(f"Failed to synthesize turn {i}: {e}")
+                    continue
+                
+                report_progress('synthesis', (i + 1) / total_turns, 0.4)
+            
+            if not audio_segments:
+                raise ValueError("No audio segments were generated successfully")
             
             # Combine audio (10%)
             logger.info("Processing audio...")
             report_progress('processing', 0.0, 0.1)
             
-            final_podcast = self.audio.combine_audio_files(
-                audio_segments,
-                output_path
-            )
-            
-            # Clean up temporary files
-            for segment in audio_segments:
-                segment.unlink()
+            try:
+                final_podcast = await self.audio.combine_audio_files(
+                    audio_segments,
+                    output_path
+                )
+            except Exception as e:
+                logger.error(f"Failed to combine audio: {e}")
+                raise
+            finally:
+                # Clean up temporary files
+                for segment in audio_segments:
+                    try:
+                        segment.unlink()
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file {segment}: {e}")
             
             report_progress('processing', 1.0, 0.1)
+            
+            if not final_podcast or not final_podcast.exists():
+                raise ValueError("Final podcast file was not created")
             
             return transcript, final_podcast
             
@@ -131,12 +170,17 @@ class PodcastGenerator:
     
     def _format_transcript(self, dialogue) -> str:
         """Format dialogue into a readable transcript."""
+        if not dialogue or not dialogue.turns:
+            return "No transcript available."
+            
         lines = []
         for turn in dialogue.turns:
-            lines.extend([
-                f"**{turn.speaker.name}**:",
-                turn.content,
-                ""  # Blank line between turns
-            ])
-        return "\n".join(lines)
+            if turn.speaker and turn.content:
+                lines.extend([
+                    f"**{turn.speaker.name}**:",
+                    turn.content,
+                    ""  # Blank line between turns
+                ])
+        
+        return "\n".join(lines) if lines else "No transcript available."
 
