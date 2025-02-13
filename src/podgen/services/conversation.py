@@ -81,7 +81,13 @@ Important Guidelines:
 4. Keep the style {style} and match each speaker's style description
 5. Include natural transitions between topics
 
-Format your response as JSON: {{"dialogue": [{"speaker": "name", "content": "text"}, ...]}}"""
+Format the response as JSON with this exact structure:
+{{
+  "dialogue": [
+    {{"speaker": "NameOfSpeaker", "content": "What they say"}},
+    {{"speaker": "AnotherSpeaker", "content": "Their response"}}
+  ]
+}}"""
 
             dialogue_turns = await self.llm.generate_dialogue(
                 prompt=prompt
@@ -177,4 +183,4 @@ Format your response as JSON: {{"dialogue": [{"speaker": "name", "content": "tex
         ))
         
         return Dialogue(turns=turns)
-
+    

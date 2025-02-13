@@ -13,23 +13,30 @@ authors = [
     {name = "Your Name", email = "your.email@example.com"}
 ]
 dependencies = [
+    # Core dependencies
     "openai>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "typer[all]>=0.9.0",
     "rich>=13.0.0",
     "python-dotenv>=1.0.0",
-    "pyttsx3>=2.90",
     "numpy>=1.20.0",
     "soundfile>=0.12.0",
     "aiohttp>=3.8.0",
     "beautifulsoup4>=4.9.0",
     "PyPDF2>=2.0.0",
-    "numpy>=1.20.0",
     "python-docx>=0.8.11",
     "markdown>=3.3.0",
     "tiktoken>=0.5.0",
     "scikit-learn>=1.0.0",
+    
+    # Audio processing
+    "librosa>=0.10.0",
+    "scipy>=1.10.0",
+    
+    # Document processing
+    "python-docx>=0.8.11",
+    "markdown>=3.3.0",
 ]
 
 [project.optional-dependencies]
@@ -38,6 +45,20 @@ dev = [
     "black>=23.0.0",
     "isort>=5.0.0",
     "mypy>=1.0.0",
+]
+
+tts = [
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    # Coqui dependencies installed via install_models.py
+]
+
+llm = [
+    # Ollama has no Python dependencies - uses HTTP API
+]
+
+all = [
+    "podgen[dev,tts,llm]"
 ]
 
 [project.scripts]

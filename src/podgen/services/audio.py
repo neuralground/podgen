@@ -1,11 +1,10 @@
-"""Enhanced audio processing with validation."""
-
 import wave
 import os
 import subprocess
 from pathlib import Path
 from typing import List, Optional, Tuple
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -104,9 +103,10 @@ class AudioProcessor:
                 logger.info(f"FFmpeg command: {' '.join(cmd)}")
             
             # Run ffmpeg
-            process = await asyncio.get_running_loop().run_in_executor(
+            loop = asyncio.get_running_loop()
+            process = await loop.run_in_executor(
                 None,
-                lambda: subprocess.run(cmd, capture_output=True, text=True)
+                lambda: subprocess.run(cmd, capture_output=True, text=True, check=True)
             )
             
             # Validate output
@@ -128,4 +128,4 @@ class AudioProcessor:
             if isinstance(e, subprocess.CalledProcessError) and e.stderr:
                 logger.error(f"FFmpeg error output: {e.stderr}")
             raise
-
+        
