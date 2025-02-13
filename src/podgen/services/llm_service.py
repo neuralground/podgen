@@ -162,56 +162,35 @@ Important: Ensure your response is valid JSON."""
 
     async def generate_dialogue(
         self,
-        analysis: Dict[str, Any],
-        speakers: List[Dict[str, Any]],
-        style: str = "casual"
+        prompt: str,
+        max_retries: int = 2
     ) -> List[Dict[str, Any]]:
-        """Generate natural dialogue based on content analysis."""
-        # Format speaker information
-        speakers_info = "\n".join(
-            f"- {s['name']}: {s['style']}"
-            for s in speakers
-        )
+        """Generate dialogue based on prompt."""
+        last_error = None
         
-        # Create conversation outline
-        structure = json.dumps(analysis.get('suggested_structure', []), indent=2)
-        topics = analysis.get('main_topics', ['General Discussion'])
-        key_points = analysis.get('key_points', [{'point': 'Overview of topic'}])
-        
-        prompt = f"""Generate a natural podcast conversation with this structure:
-
-Speakers:
-{speakers_info}
-
-Style: {style}
-
-Topics: {', '.join(topics)}
-
-Key Points:
-{json.dumps(key_points, indent=2)}
-
-Structure:
-{structure}
-
-Format your response as a JSON array of dialogue turns:
-[
-    {{"speaker": "name", "content": "dialogue text"}},
-    ...
-]
-
-Important: Ensure your response is valid JSON."""
-
-        try:
-            response = await self._call_api(prompt)
-            return self._extract_json_from_response(response)
-        except Exception as e:
-            logger.error(f"Dialogue generation failed: {e}")
-            # Return basic dialogue structure
-            return [
-                {"speaker": speakers[0]['name'], "content": f"Welcome to our discussion about {topics[0]}."},
-                {"speaker": speakers[1]['name'], "content": "Thank you for having me."},
-                {"speaker": speakers[0]['name'], "content": "Let's explore this topic together."}
-            ]
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self._call_api(prompt)
+                try:
+                    data = self._extract_json_from_response(response)
+                    if isinstance(data, dict) and 'dialogue' in data:
+                        return data['dialogue']
+                    else:
+                        logger.warning("Response missing dialogue array")
+                        continue
+                except Exception as e:
+                    logger.warning(f"Failed to parse dialogue JSON: {e}")
+                    continue
+                    
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Dialogue generation attempt {attempt + 1} failed: {e}")
+                continue
+                
+        # All attempts failed
+        if last_error:
+            raise last_error
+        return []
 
     async def generate_follow_up(
         self,

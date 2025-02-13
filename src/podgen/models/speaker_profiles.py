@@ -1,6 +1,9 @@
-from typing import Dict, List
-from ..models.conversation_style import SpeakerPersonality
+"""Speaker profiles and conversation style definitions."""
 
+from typing import Dict, List
+from .conversation_style import SpeakerPersonality
+
+# Define default speaker profiles
 DEFAULT_SPEAKER_PROFILES: Dict[str, SpeakerPersonality] = {
     "professional_host": SpeakerPersonality(
         name="Alex",

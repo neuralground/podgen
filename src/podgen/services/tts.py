@@ -1,12 +1,15 @@
+"""Text-to-Speech service implementation."""
+
 from pathlib import Path
 from typing import Optional, Dict, List
 import pyttsx3
 import subprocess
 import logging
-import time
-import shutil
 import platform
+import shutil
 import asyncio
+import threading
+from queue import Queue
 from ..models.dialogue import DialogueTurn
 
 logger = logging.getLogger(__name__)
@@ -17,36 +20,76 @@ class TTSEngine:
         raise NotImplementedError()
 
 class Pyttsx3Engine(TTSEngine):
-    """Primary TTS engine using pyttsx3"""
-    def __init__(self):
-        self.engine = None
-        self._init_engine()
+    """Primary TTS engine using pyttsx3 with thread pool"""
     
-    def _init_engine(self):
-        if self.engine:
+    _engine_pool = Queue()
+    _pool_lock = threading.Lock()
+    
+    @classmethod
+    def _create_engine(cls):
+        """Create a new engine instance."""
+        engine = pyttsx3.init()
+        engine.setProperty('rate', 175)
+        engine.setProperty('volume', 1.0)
+        return engine
+    
+    @classmethod
+    def _get_engine(cls):
+        """Get an engine from the pool or create a new one."""
+        try:
+            return cls._engine_pool.get_nowait()
+        except:
+            return cls._create_engine()
+    
+    @classmethod
+    def _return_engine(cls, engine):
+        """Return an engine to the pool."""
+        try:
+            cls._engine_pool.put_nowait(engine)
+        except:
             try:
-                self.engine.stop()
+                engine.stop()
             except:
                 pass
-        
-        self.engine = pyttsx3.init()
-        self.engine.setProperty('rate', 175)
-        self.engine.setProperty('volume', 1.0)
     
     async def synthesize(self, text: str, output_path: Path) -> bool:
         try:
-            # Run pyttsx3 in a thread pool since it's blocking
+            # Get engine from pool
+            engine = self._get_engine()
+            
+            # Run synthesis in thread pool
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, self._do_synthesize, text, output_path)
-            return output_path.exists() and output_path.stat().st_size > 0
+            success = await loop.run_in_executor(
+                None,
+                self._do_synthesize,
+                engine,
+                text,
+                output_path
+            )
+            
+            # Return engine to pool if successful
+            if success:
+                self._return_engine(engine)
+            else:
+                try:
+                    engine.stop()
+                except:
+                    pass
+            
+            return success and output_path.exists() and output_path.stat().st_size > 0
+            
         except Exception as e:
             logger.warning(f"pyttsx3 synthesis failed: {e}")
             return False
-            
-    def _do_synthesize(self, text: str, output_path: Path):
-        """Synchronous synthesis method to run in thread pool."""
-        self.engine.save_to_file(text, str(output_path))
-        self.engine.runAndWait()
+    
+    def _do_synthesize(self, engine, text: str, output_path: Path) -> bool:
+        """Synchronous synthesis method."""
+        try:
+            engine.save_to_file(text, str(output_path))
+            engine.runAndWait()
+            return True
+        except:
+            return False
 
 class SayEngine(TTSEngine):
     """macOS 'say' command TTS engine"""

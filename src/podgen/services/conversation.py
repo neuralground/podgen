@@ -1,8 +1,14 @@
 from typing import List, Dict, Any, Optional
 import logging
 import random
+import json
 from ..models.dialogue import DialogueTurn, Dialogue
 from ..models.conversation_style import SpeakerPersonality
+from ..models.speaker_profiles import (
+    DEFAULT_SPEAKER_PROFILES,
+    get_default_speakers,
+    get_available_styles
+)
 from .llm_service import LLMService
 
 logger = logging.getLogger(__name__)
@@ -12,41 +18,13 @@ class ConversationGenerator:
     
     def __init__(self):
         self.llm = LLMService()
-        self.default_speakers = {
-            "host": SpeakerPersonality(
-                name="Alex",
-                voice_id="p335",
-                gender="neutral",
-                style="Knowledgeable and engaging host who guides the conversation",
-                verbosity=1.0,
-                formality=1.0
-            ),
-            "expert": SpeakerPersonality(
-                name="Dr. Sarah",
-                voice_id="p347",
-                gender="female",
-                style="Technical expert who provides detailed explanations",
-                verbosity=1.2,
-                formality=1.5
-            ),
-            "questioner": SpeakerPersonality(
-                name="Mike",
-                voice_id="p326",
-                gender="male",
-                style="Asks insightful questions to clarify complex topics",
-                verbosity=0.8,
-                formality=0.7
-            )
-        }
     
     async def generate_dialogue(
         self,
         analysis: Dict[str, Any],
         config: Optional[Dict[str, Any]] = None
     ) -> Dialogue:
-        """
-        Generate a natural conversation using LLM.
-        """
+        """Generate a natural conversation using LLM."""
         if not analysis:
             logger.warning("No analysis provided, using default structure")
             analysis = {
@@ -64,14 +42,49 @@ class ConversationGenerator:
         # Get or create conversation configuration
         config = config or {}
         style = config.get('style', 'casual')
-        speakers = list(self.default_speakers.values())
+        target_duration = config.get('target_duration', 15)  # minutes
+        
+        # Get speaker roles from config
+        speaker_roles = config.get('speaker_roles', [])
+        if not speaker_roles:
+            # Use default roles based on style
+            if style == 'casual':
+                speaker_roles = ['casual_host', 'industry_expert']
+            elif style == 'formal':
+                speaker_roles = ['professional_host', 'technical_expert']
+            else:
+                speaker_roles = ['professional_host', 'technical_expert']
+        
+        # Get speakers based on roles
+        speakers = [DEFAULT_SPEAKER_PROFILES[role] for role in speaker_roles]
+        
+        # Calculate approximate words needed for target duration
+        # Assuming average speaking rate of 150 words per minute
+        target_words = target_duration * 150
         
         try:
-            # Generate initial dialogue
+            # Generate initial dialogue with word count guidance
+            prompt = f"""Generate a natural {style} conversation between {len(speakers)} speakers discussing the following topics:
+
+Topics: {', '.join(analysis.get('main_topics', ['General Discussion']))}
+
+Key Points:
+{json.dumps(analysis.get('key_points', [{'point': 'Overview'}]), indent=2)}
+
+Speakers:
+{chr(10).join(f"- {s.name}: {s.style}" for s in speakers)}
+
+Important Guidelines:
+1. Use EXACTLY these {len(speakers)} speakers: {', '.join(s.name for s in speakers)}
+2. Total conversation should be approximately {target_words} words
+3. Each turn should average 30-50 words for natural flow
+4. Keep the style {style} and match each speaker's style description
+5. Include natural transitions between topics
+
+Format your response as JSON: {{"dialogue": [{"speaker": "name", "content": "text"}, ...]}}"""
+
             dialogue_turns = await self.llm.generate_dialogue(
-                analysis,
-                [s.dict() for s in speakers],
-                style
+                prompt=prompt
             )
             
             if not dialogue_turns:
@@ -80,63 +93,47 @@ class ConversationGenerator:
             
             # Convert to DialogueTurn objects
             turns = []
+            used_speakers = set()
+            
             for turn in dialogue_turns:
-                # Validate turn data
                 if not isinstance(turn, dict) or 'speaker' not in turn or 'content' not in turn:
                     logger.warning(f"Invalid turn format: {turn}")
                     continue
-                    
+                
                 # Find matching speaker
                 speaker = next(
                     (s for s in speakers if s.name == turn['speaker']),
-                    speakers[0]  # Default to first speaker if not found
+                    None
                 )
                 
+                if not speaker:
+                    logger.warning(f"Unknown speaker in turn: {turn['speaker']}")
+                    continue
+                
+                used_speakers.add(speaker.name)
                 turns.append(DialogueTurn(
                     speaker=speaker,
                     content=turn['content']
                 ))
             
+            # Validate turn count and word count
+            total_words = sum(len(turn.content.split()) for turn in turns)
+            logger.info(f"Generated dialogue with {len(turns)} turns and {total_words} words")
+            logger.info(f"Used speakers: {', '.join(used_speakers)}")
+            
+            if len(used_speakers) != len(speakers):
+                logger.warning(
+                    f"Not all speakers were used. Expected {len(speakers)}, got {len(used_speakers)}"
+                )
+            
+            if total_words < target_words * 0.5:
+                logger.warning(f"Dialogue too short ({total_words} words), regenerating...")
+                return await self.generate_dialogue(analysis, config)
+            
             # Ensure we have at least some dialogue
             if not turns:
                 logger.warning("No valid turns created, using fallback")
                 return await self._generate_basic_dialogue(analysis, speakers)
-            
-            # If configured, generate follow-up responses
-            if config.get('interactive', True):
-                enhanced_turns = []
-                for i, turn in enumerate(turns):
-                    enhanced_turns.append(turn)
-                    
-                    # Randomly add follow-ups (with decreasing probability)
-                    if i < len(turns) - 1 and random.random() < 0.3 * (1 - i/len(turns)):
-                        try:
-                            # Generate follow-up
-                            context = [
-                                {
-                                    'speaker': t.speaker.name,
-                                    'content': t.content
-                                }
-                                for t in turns[max(0, i-2):i+2]
-                            ]
-                            
-                            next_speaker = turns[i + 1].speaker
-                            follow_up = await self.llm.generate_follow_up(
-                                context,
-                                analysis['main_topics'][0],
-                                next_speaker.dict()
-                            )
-                            
-                            if follow_up:
-                                enhanced_turns.append(DialogueTurn(
-                                    speaker=next_speaker,
-                                    content=follow_up
-                                ))
-                        except Exception as e:
-                            logger.warning(f"Failed to generate follow-up: {e}")
-                            continue
-                
-                turns = enhanced_turns
             
             return Dialogue(turns=turns)
             

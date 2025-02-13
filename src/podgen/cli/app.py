@@ -1,6 +1,8 @@
+"""Main CLI application module."""
+
 import typer
 from pathlib import Path
-from typing import Optional, Set
+from typing import Optional, Set, Dict
 from rich.console import Console
 from rich.prompt import Prompt, Confirm
 import readline
@@ -23,6 +25,7 @@ from .conversation_commands import (
     play_conversation,
     show_conversation
 )
+from .cli_utils import setup_completion  # Updated import
 from .. import config
 from ..services.podcast_generator import PodcastGenerator
 from ..services.content_analyzer import ContentAnalyzer
@@ -41,18 +44,18 @@ class AsyncApp:
         # Initialize storage
         data_dir = Path(config.settings.data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.storage = JSONStorage(data_dir)
         self.doc_store = DocumentStore(data_dir / "documents.db")
         self.conv_store = ConversationStore(data_dir / "conversations.db")
         self.help_system = CommandHelp()
-        
+
         # Initialize podcast generation services
         self.content_analyzer = ContentAnalyzer(self.doc_store)
         self.conversation_gen = ConversationGenerator()
         self.tts_service = TTSService()
         self.audio_processor = AudioProcessor()
-        
+
         self.podcast_generator = PodcastGenerator(
             self.doc_store,
             self.content_analyzer,
@@ -60,10 +63,14 @@ class AsyncApp:
             self.tts_service,
             self.audio_processor
         )
-        
+
+        # Set up command completion
+        setup_completion()
+
         self.loop = None
         self.background_tasks: Set[asyncio.Task] = set()
-    
+        self.conversation_tasks: Dict[int, asyncio.Task] = {}
+
     def get_event_loop(self):
         """Get or create event loop."""
         if self.loop is None:
@@ -83,7 +90,7 @@ class AsyncApp:
                 task.result()  # Get result to handle any exceptions
             except Exception as e:
                 logger.error(f"Background task failed: {e}")
-    
+
     async def handle_command(self, cmd: str) -> bool:
         """
         Handle CLI commands starting with /
@@ -110,22 +117,25 @@ class AsyncApp:
                     if len(args) < 2:
                         console.print("[red]Missing source path or URL")
                         return True
-                    handle_doc_command(f"/add {' '.join(args[1:])}", self.doc_store, console)
+                    await handle_doc_command(f"/add {' '.join(args[1:])}", self.doc_store, console)
                 elif subcmd == "conversation":
-                    # Create task for conversation generation
-                    task = asyncio.create_task(
-                        handle_add_conversation(
-                            console,
-                            self.conv_store,
-                            self.doc_store,
-                            self.podcast_generator,
-                            Path(config.settings.output_dir),
-                            background=True
-                        )
+                    # Check for debug mode
+                    debug_mode = len(args) > 1 and args[1] == "debug"
+                    task = await handle_add_conversation(
+                        console,
+                        self.conv_store,
+                        self.doc_store,
+                        self.podcast_generator,
+                        Path(config.settings.output_dir),
+                        debug=debug_mode
                     )
-                    self.background_tasks.add(task)
-                    # Task cleanup callback
-                    task.add_done_callback(lambda t: self.background_tasks.discard(t))
+                    if task:
+                        self.background_tasks.add(task)
+                        # Store task with conversation ID
+                        self.conversation_tasks[task.conversation_id] = task
+                        # Task cleanup callbacks
+                        task.add_done_callback(lambda t: self.background_tasks.discard(t))
+                        task.add_done_callback(lambda t: self.conversation_tasks.pop(getattr(t, 'conversation_id', None), None))
                 else:
                     console.print(f"[red]Unknown add command: {subcmd}")
                     
@@ -136,7 +146,7 @@ class AsyncApp:
                     
                 subcmd = args[0]
                 if subcmd == "sources":
-                    handle_doc_command("/list", self.doc_store, console)
+                    await handle_doc_command("/list", self.doc_store, console)
                 elif subcmd == "conversations":
                     handle_list_conversations(console, self.conv_store)
                 else:
@@ -157,7 +167,7 @@ class AsyncApp:
                         
                     target = args[1].lower()
                     if target in ["conversations", "conversation"]:
-                        handle_remove_all_conversations(console, self.conv_store)
+                        await handle_remove_all_conversations(console, self.conv_store, self.conversation_tasks)
                     elif target in ["sources", "source"]:
                         handle_remove_all_sources(console, self.doc_store)
                     else:
@@ -168,20 +178,20 @@ class AsyncApp:
                     if len(args) < 2:
                         console.print("[red]Missing source ID")
                         return True
-                    handle_doc_command(f"/remove {args[1]}", self.doc_store, console)
+                    await handle_doc_command(f"/remove {args[1]}", self.doc_store, console)
                 elif subcmd == "conversation":
                     if len(args) < 2:
                         console.print("[red]Missing conversation ID")
                         return True
                     try:
                         conv_id = int(args[1])
-                        handle_remove_conversation(console, self.conv_store, conv_id)
+                        await handle_remove_conversation(console, self.conv_store, conv_id, self.conversation_tasks)
                     except ValueError:
                         console.print("[red]Invalid conversation ID")
                 else:
                     console.print("[red]Unknown remove command or missing arguments")
                     console.print("Usage: /remove <all|conversation|source> [id]")
-                    
+                   
             elif command == "play":
                 if not args or args[0] != "conversation" or len(args) != 2:
                     console.print("[red]Usage: /play conversation <id>")
@@ -221,10 +231,10 @@ class AsyncApp:
                         console.print("[yellow]Cancelling background tasks...")
                         for task in active_tasks:
                             task.cancel()
-                        
+                            
                 console.print("Goodbye!")
                 return False
-                
+                    
             else:
                 console.print(f"[red]Unknown command: {command}")
                 console.print("Use /help to see available commands")
@@ -235,7 +245,7 @@ class AsyncApp:
             logger.error(f"Command error: {e}")
             console.print(f"[red]Error executing command: {str(e)}")
             return True
-
+    
     async def run_interactive(self, input_text: Optional[str] = None):
         """Run interactive CLI session."""
         try:

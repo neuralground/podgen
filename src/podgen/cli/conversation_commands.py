@@ -1,4 +1,5 @@
-from pathlib import Path
+"""CLI commands for conversation management."""
+
 from rich.console import Console
 from rich.table import Table
 from rich.markdown import Markdown
@@ -10,11 +11,12 @@ import logging
 import datetime
 from typing import List, Dict, Any, Optional
 import asyncio
+from pathlib import Path
 
 from ..storage.conversation import ConversationStatus, Conversation, ConversationStore
 from ..storage.document_store import Document, DocumentStore
 from ..services.podcast_generator import PodcastGenerator
-from .speaker_profiles import (
+from ..models.speaker_profiles import (
     DEFAULT_SPEAKER_PROFILES,
     get_default_speakers,
     get_available_styles,
@@ -22,6 +24,9 @@ from .speaker_profiles import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Import config prompting
+from .conversation_config import prompt_conversation_config
 
 async def prompt_conversation_config(
     console: Console,
@@ -98,15 +103,15 @@ async def handle_add_conversation(
     doc_store: DocumentStore,
     podcast_gen: PodcastGenerator,
     output_dir: Path,
-    background: bool = True
-) -> None:
+    debug: bool = False
+) -> Optional[asyncio.Task]:
     """Handle the /add conversation command."""
     try:
         # Get all documents
         documents = doc_store.list_documents()
         if not documents:
             console.print("[red]No documents available. Add some documents first.")
-            return
+            return None
         
         # Get configuration from user
         config = await prompt_conversation_config(console, doc_store, documents)
@@ -129,17 +134,22 @@ async def handle_add_conversation(
                 "target_duration": config["target_duration"]
             }
         )
-        
+
         async def generate_podcast():
             try:
-                # Generate podcast
-                progress_callback = lambda p: conv_store.update_progress(conversation.id, p)
+                def progress_callback(progress: float, stage: str = None):
+                    conv_store.update_progress(conversation.id, progress)
+                    if debug and stage:
+                        console.print(f"[yellow]Stage: {stage} - Progress: {progress:.1%}")
                 
+                if debug:
+                    console.print("[yellow]Starting content analysis...")
                 transcript, audio_file = await podcast_gen.generate_podcast(
                     doc_ids=[doc.id for doc in documents],
                     output_path=audio_path,
                     progress_callback=progress_callback,
-                    config=config
+                    config=config,
+                    debug=debug
                 )
                 
                 # Update with final content
@@ -150,26 +160,41 @@ async def handle_add_conversation(
                     audio_path=audio_file
                 )
                 
+                if debug:
+                    console.print("[green]Generation complete!")
+                
             except Exception as e:
                 logger.error(f"Failed to generate podcast: {e}")
                 conv_store.mark_failed(conversation.id, str(e))
+                if debug:
+                    console.print(f"[red]Generation failed: {str(e)}")
+                    import traceback
+                    console.print(traceback.format_exc())
         
-        if background:
-            # Start generation in background
+        if not debug:
+            # Start generation in background and return the task
             console.print(f"[green]Started generating podcast {conversation.id} in background.")
             console.print(f"Title: {config['title']}")
             console.print(f"Style: {config['style']}")
             console.print("Use /list conversations to check the status.")
-            return generate_podcast()
+            task = asyncio.create_task(generate_podcast())
+            task.conversation_id = conversation.id  # Attach ID for cleanup
+            return task
         else:
-            # Generate synchronously
-            console.print(f"[yellow]Started generating podcast {conversation.id}...")
+            # Generate synchronously with debug output
+            console.print(f"[yellow]Starting podcast generation in debug mode...")
+            console.print(f"Title: {config['title']}")
+            console.print(f"Style: {config['style']}")
             await generate_podcast()
-            console.print(f"[green]Finished generating podcast {conversation.id}.")
+            return None
             
     except Exception as e:
         logger.error(f"Failed to start podcast generation: {e}")
         console.print(f"[red]Error: {str(e)}")
+        if debug:
+            import traceback
+            console.print(traceback.format_exc())
+        return None
 
 def handle_list_conversations(
     console: Console,
@@ -206,10 +231,11 @@ def handle_list_conversations(
     
     console.print(table)
 
-def handle_remove_conversation(
+async def handle_remove_conversation(
     console: Console,
     conv_store: ConversationStore,
-    conv_id: int
+    conv_id: int,
+    conversation_tasks: Optional[Dict[int, asyncio.Task]] = None
 ) -> None:
     """Handle the /remove conversation command."""
     conversation = conv_store.get(conv_id)
@@ -218,24 +244,40 @@ def handle_remove_conversation(
         return
     
     if conversation.status == ConversationStatus.GENERATING:
-        console.print("[red]Cannot remove conversation while it is being generated.")
-        return
+        if not Confirm.ask(f"[yellow]Conversation {conv_id} is still being generated. Stop generation and remove?"):
+            return
+            
+        # Cancel running task if we have it
+        if conversation_tasks and conv_id in conversation_tasks:
+            task = conversation_tasks[conv_id]
+            if not task.done():
+                console.print("[yellow]Cancelling generation task...")
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error cancelling task: {e}")
+                # Task cleanup handled by callbacks in AsyncApp
     
-    if Confirm.ask(f"Remove conversation {conv_id}?"):
-        if conversation.audio_path and conversation.audio_path.exists():
-            try:
-                conversation.audio_path.unlink()
-            except Exception as e:
-                logger.warning(f"Failed to remove audio file: {e}")
-        
-        if conv_store.remove(conv_id):
-            console.print(f"[green]Removed conversation {conv_id}")
-        else:
-            console.print("[red]Failed to remove conversation")
+    # Clean up any output files
+    if conversation.audio_path and conversation.audio_path.exists():
+        try:
+            conversation.audio_path.unlink()
+        except Exception as e:
+            logger.warning(f"Failed to remove audio file: {e}")
+    
+    # Remove from database
+    if conv_store.remove(conv_id):
+        console.print(f"[green]Removed conversation {conv_id}")
+    else:
+        console.print("[red]Failed to remove conversation")
 
-def handle_remove_all_conversations(
+async def handle_remove_all_conversations(
     console: Console,
-    conv_store: ConversationStore
+    conv_store: ConversationStore,
+    conversation_tasks: Optional[Dict[int, asyncio.Task]] = None
 ) -> None:
     """Handle the /remove conversations all command."""
     conversations = conv_store.list_all()
@@ -246,9 +288,24 @@ def handle_remove_all_conversations(
     # Count conversations by status
     generating = sum(1 for c in conversations if c.status == ConversationStatus.GENERATING)
     if generating > 0:
-        console.print(f"[red]Cannot remove all conversations: {generating} still generating")
-        return
+        if not Confirm.ask(f"[yellow]{generating} conversations are still generating. Stop all and remove?"):
+            return
         
+        # Cancel all running tasks
+        if conversation_tasks:
+            console.print("[yellow]Cancelling generation tasks...")
+            for conv in conversations:
+                if conv.id in conversation_tasks:
+                    task = conversation_tasks[conv.id]
+                    if not task.done():
+                        task.cancel()
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception as e:
+                            logger.error(f"Error cancelling task {conv.id}: {e}")
+    
     if Confirm.ask(f"Remove all {len(conversations)} conversations?"):
         # Remove audio files first
         for conv in conversations:

@@ -35,7 +35,8 @@ class PodcastGenerator:
         doc_ids: List[int],
         output_path: Path,
         progress_callback: Optional[ProgressCallback] = None,
-        config: Optional[Dict[str, Any]] = None
+        config: Optional[Dict[str, Any]] = None,
+        debug: bool = False
     ) -> Tuple[str, Path]:
         """
         Generate a complete podcast from documents.
@@ -61,7 +62,7 @@ class PodcastGenerator:
                     )
                     
                     total_progress = base_progress + (stage_progress * weight)
-                    progress_callback(total_progress)
+                    progress_callback(total_progress, stage if debug else None)
             
             # Validate document IDs
             if not doc_ids:
@@ -144,7 +145,8 @@ class PodcastGenerator:
             try:
                 final_podcast = await self.audio.combine_audio_files(
                     audio_segments,
-                    output_path
+                    output_path,
+                    debug=debug
                 )
             except Exception as e:
                 logger.error(f"Failed to combine audio: {e}")

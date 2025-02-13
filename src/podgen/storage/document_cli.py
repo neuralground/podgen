@@ -1,4 +1,4 @@
-"""CLI commands for document management."""
+"""CLI commands for document management with async support."""
 
 from pathlib import Path
 from typing import Optional
@@ -7,10 +7,10 @@ from rich.console import Console
 from rich.prompt import Confirm
 from datetime import datetime
 import urllib.parse
-from .document_store import DocumentStore
+from ..storage.document_store import DocumentStore
 
-def handle_doc_command(cmd: str, doc_store: DocumentStore, console: Console) -> None:
-    """Handle document management commands"""
+async def handle_doc_command(cmd: str, doc_store: DocumentStore, console: Console) -> None:
+    """Handle document management commands asynchronously"""
     parts = cmd[1:].split()  # Remove leading slash
     if not parts:
         _show_doc_help(console)
@@ -31,7 +31,7 @@ def handle_doc_command(cmd: str, doc_store: DocumentStore, console: Console) -> 
             try:
                 parsed = urllib.parse.urlparse(source)
                 if parsed.scheme and parsed.netloc:  # Valid URL
-                    doc = doc_store.add_url(source)
+                    doc = await doc_store.add_url(source)
                     console.print(f"[green]Added URL: {source}")
                     return
             except:
@@ -40,7 +40,7 @@ def handle_doc_command(cmd: str, doc_store: DocumentStore, console: Console) -> 
             # Try as file path
             try:
                 path = Path(source).resolve()
-                doc = doc_store.add_file(path)
+                doc = await doc_store.add_file(path)
                 console.print(f"[green]Added file: {path}")
             except FileNotFoundError:
                 console.print(f"[red]File not found: {source}")
