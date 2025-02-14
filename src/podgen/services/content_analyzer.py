@@ -1,5 +1,5 @@
 from typing import List, Dict, Any, Optional
-import logging
+from .llm_service import LLMService, LLMProvider, create_llm_service
 from .content import (
     ContentExtractorService,
     TextChunker,
@@ -7,17 +7,33 @@ from .content import (
     SemanticAnalyzer
 )
 from ..storage.document_store import Document, DocumentStore
-from .llm_service import LLMService
+import logging
 
 logger = logging.getLogger(__name__)
 
 class ContentAnalyzer:
     """Analyzes document content using LLM capabilities."""
 
-    def __init__(self, doc_store: DocumentStore):
+    def __init__(
+        self,
+        doc_store: DocumentStore,
+        llm_provider: Optional[LLMProvider] = None,
+        llm_model: Optional[str] = None,
+        api_key: Optional[str] = None
+    ):
         self.doc_store = doc_store
         self.extractor = ContentExtractorService()
-        self.llm = LLMService()
+
+        # Initialize LLM service with provided configuration
+        if llm_provider and llm_model:
+            self.llm = create_llm_service(
+                provider=llm_provider,
+                model_name=llm_model,
+                api_key=api_key
+            )
+        else:
+            self.llm = LLMService()
+
         self.text_chunker = TextChunker()
         self.semantic_analyzer = SemanticAnalyzer(self.llm)
 

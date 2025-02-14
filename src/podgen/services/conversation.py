@@ -9,16 +9,28 @@ from ..models.speaker_profiles import (
     get_default_speakers,
     get_available_styles
 )
-from .llm_service import LLMService
+from .llm_service import LLMService, LLMProvider, create_llm_service
 
 logger = logging.getLogger(__name__)
 
 class ConversationGenerator:
     """Generates natural dialogue using LLM capabilities."""
-    
-    def __init__(self):
-        self.llm = LLMService()
-    
+
+    def __init__(
+        self,
+        llm_provider: Optional[LLMProvider] = None,
+        llm_model: Optional[str] = None,
+        api_key: Optional[str] = None
+    ):
+        if llm_provider and llm_model:
+            self.llm = create_llm_service(
+                provider=llm_provider,
+                model_name=llm_model,
+                api_key=api_key
+            )
+        else:
+            self.llm = LLMService()
+
     async def generate_dialogue(
         self,
         analysis: Dict[str, Any],

@@ -1,109 +1,123 @@
-"""Enhanced CLI completion for both commands and paths."""
+"""Enhanced CLI completion using argcomplete."""
 
 import os
 import glob
-import readline
 from pathlib import Path
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Any
+import logging
 
-class PodgenCompleter:
-    """Handles command and path completion for the CLI."""
+logger = logging.getLogger(__name__)
+
+def path_completer(prefix: str) -> List[str]:
+    """Complete file and directory paths."""
+    if prefix.startswith('~'):
+        prefix = os.path.expanduser(prefix)
     
-    def __init__(self):
-        """Initialize the completer with known commands."""
-        self.matches: List[str] = []
-        self.commands = {
-            "add": {"source", "conversation", "conversation debug"},
-            "list": {"sources", "conversations"},
-            "remove": {"source", "conversation", "all sources", "all conversations"},
-            "play": {"conversation"},
-            "show": {"conversation"},
-            "help": set(),
-            "bye": set()
-        }
+    base_dir = os.path.dirname(prefix) if prefix else '.'
+    if not base_dir:
+        base_dir = '.'
         
-        # Build full command set including subcommands
-        self.all_commands: Set[str] = set()
-        for cmd, subcmds in self.commands.items():
-            self.all_commands.add(f"/{cmd}")
-            for subcmd in subcmds:
-                self.all_commands.add(f"/{cmd} {subcmd}")
-    
-    def complete(self, text: str, state: int) -> Optional[str]:
-        """Readline completion function."""
-        if state == 0:
-            # Start of a command
-            if not text or text.startswith('/'):
-                cmd_text = text[1:] if text.startswith('/') else text
-                self.matches = [
-                    cmd for cmd in self.all_commands 
-                    if cmd.startswith(text or '/')
-                ]
-                self.matches.sort()
-            
-            # After "add source" command, do path completion
-            elif text.startswith(('http://', 'https://')):
-                self.matches = []
-            else:
-                line = readline.get_line_buffer()
-                if line.startswith('/add source '):
-                    # Handle path completion
-                    if text.startswith('~'):
-                        text = os.path.expanduser(text)
-                    
-                    if os.path.isabs(text):
-                        directory = os.path.dirname(text)
-                        partial = os.path.basename(text)
-                    else:
-                        directory = '.' if not text or '/' not in text else os.path.dirname(text)
-                        partial = os.path.basename(text)
-                    
-                    if not directory:
-                        directory = '.'
-                    
-                    try:
-                        if partial:
-                            pattern = os.path.join(directory, partial + '*')
-                        else:
-                            pattern = os.path.join(directory, '*')
-                            
-                        self.matches = glob.glob(pattern)
-                        
-                        # Add trailing slash to directories
-                        self.matches = [
-                            f"{match}/" if os.path.isdir(match) else match
-                            for match in self.matches
-                        ]
-                        
-                        # Sort with directories first
-                        self.matches.sort(key=lambda x: (not x.endswith('/'), x.lower()))
-                    except Exception:
-                        self.matches = []
+    try:
+        entries = os.listdir(base_dir)
+        matches = []
+        
+        for entry in entries:
+            full_path = os.path.join(base_dir, entry)
+            # Only include entries that match the prefix
+            if full_path.startswith(prefix) or not prefix:
+                # Add trailing slash for directories
+                if os.path.isdir(full_path):
+                    matches.append(f"{full_path}/")
                 else:
-                    self.matches = []
+                    matches.append(full_path)
         
-        return self.matches[state] if state < len(self.matches) else None
+        # Sort matches with directories first
+        matches.sort(key=lambda x: (not x.endswith('/'), x.lower()))
+        return matches
+        
+    except OSError:
+        return []
 
-def setup_path_completion() -> None:
-    """Set up readline with command and path completion (legacy name for compatibility)."""
-    setup_completion()
+def command_completer(prefix: str, parsed_args: Dict[str, Any]) -> List[str]:
+    """Complete commands and subcommands."""
+    commands = {
+        "add": ["source", "conversation"],
+        "list": ["sources", "conversations"],
+        "remove": ["source", "conversation", "all sources", "all conversations"],
+        "play": ["conversation"],
+        "show": ["conversation"],
+        "help": [],
+        "quit": [],
+        "exit": [],
+        "bye": []
+    }
+    
+    # Remove leading slash if present
+    clean_prefix = prefix.lstrip('/')
+    
+    # If empty prefix, show all commands
+    if not clean_prefix:
+        return [f"/{cmd}" for cmd in commands.keys()]
+    
+    # If prefix has no space, complete command
+    if ' ' not in clean_prefix:
+        return [
+            f"/{cmd}" for cmd in commands.keys()
+            if cmd.startswith(clean_prefix)
+        ]
+    
+    # If we have "add source", use path completion
+    if clean_prefix.startswith("add source"):
+        path_part = clean_prefix[len("add source"):].lstrip()
+        return path_completer(path_part)
+    
+    # Otherwise complete subcommands
+    cmd_parts = clean_prefix.split()
+    if len(cmd_parts) == 1 and cmd_parts[0] in commands:
+        return [f"/{cmd_parts[0]} {sub}" for sub in commands[cmd_parts[0]]]
+        
+    return []
+
+def get_completion(text: str, state: int) -> Optional[str]:
+    """Get completion for current input."""
+    if state == 0:
+        # Split input into command and args
+        parts = text.split()
+        
+        # Use appropriate completer based on input
+        if not text or text.startswith('/'):
+            matches = command_completer(text, {})
+        elif len(parts) >= 2 and parts[0] == '/add' and parts[1] == 'source':
+            # Pass the partial path to path completer
+            path_part = ' '.join(parts[2:]) if len(parts) > 2 else ''
+            matches = path_completer(path_part)
+        else:
+            matches = []
+            
+        # Store matches for subsequent states
+        get_completion.matches = matches
+    
+    try:
+        return get_completion.matches[state]
+    except (AttributeError, IndexError):
+        return None
 
 def setup_completion() -> None:
-    """Set up readline with command and path completion."""
-    # Create and register completer
-    completer = PodgenCompleter()
-    readline.set_completer(completer.complete)
+    """Set up completion for the CLI."""
+    import readline
     
-    # Set up delimiters - remove '/' so paths aren't split
-    readline.set_completer_delims(' \t\n`!@#$%^&*()=+[{]}\\|;:\'",<>?')
+    # Set completer function
+    readline.set_completer(get_completion)
     
-    # Set completion mode based on platform
+    # Set word delimiters
+    readline.set_completer_delims(' \t\n')
+    
+    # Set completion mode
     if 'libedit' in readline.__doc__:
-        # macOS - use basic completion
         readline.parse_and_bind('bind ^I rl_complete')
     else:
-        # Linux/Unix - use filename completion
         readline.parse_and_bind('tab: complete')
 
-__all__ = ['setup_completion', 'setup_path_completion', 'PodgenCompleter']
+# Initialize completion on import
+setup_completion()
 
