@@ -55,11 +55,13 @@ class ModelConfig:
         llm_model: str = "gpt-4",
         tts_type: TTSType = TTSType.SYSTEM,
         tts_model: Optional[str] = None,
+        output_dir: Path = Path("output"),
     ):
         self.llm_type = llm_type
         self.llm_model = llm_model
         self.tts_type = tts_type
         self.tts_model = tts_model
+        self.output_dir = output_dir
 
     @property
     def llm_provider(self) -> LLMProvider:
@@ -75,10 +77,12 @@ class AsyncApp:
     def __init__(self, model_config: ModelConfig):
         # Store model configuration
         self.model_config = model_config
+        self.debug = False  # Add debug flag
         
         # Initialize storage
         data_dir = Path(config.settings.data_dir)
         data_dir.mkdir(parents=True, exist_ok=True)
+        print(f"DEBUG: Using data directory: {data_dir}")
 
         self.storage = JSONStorage(data_dir)
         self.doc_store = DocumentStore(data_dir / "documents.db")
@@ -90,7 +94,8 @@ class AsyncApp:
         if not api_key and self.model_config.llm_type == LLMType.openai:
             raise ValueError("OPENAI_API_KEY not set in .env file")
 
-        # Initialize services with configured models
+        # Initialize services
+        print("DEBUG: Initializing services...")
         self.content_analyzer = ContentAnalyzer(
             self.doc_store,
             llm_provider=self.model_config.llm_provider,
@@ -132,7 +137,7 @@ class AsyncApp:
         self.background_tasks: Set[asyncio.Task] = set()
         self.conversation_tasks: Dict[int, asyncio.Task] = {}
 
-        setup_completion()
+        print("DEBUG: AsyncApp initialization complete")
 
     def _cleanup_background_tasks(self) -> None:
         """Clean up completed background tasks."""
@@ -173,7 +178,6 @@ class AsyncApp:
                         current_text = None  # Clear for next iteration
                     else:
                         try:
-                            # Use prompt.ask correctly
                             text_to_process = Prompt.ask("podgen")
                         except EOFError:  # Handle Ctrl+D
                             console.print("\nGoodbye!")
@@ -186,27 +190,74 @@ class AsyncApp:
                         
                     # Process commands
                     if text_to_process.startswith('/'):
-                        # Handle command (existing command processing code)
-                        command = text_to_process[1:].split()
-                        if not command:
+                        print(f"DEBUG: Processing command: {text_to_process}")
+                        parts = text_to_process[1:].split()  # Remove leading slash
+                        if not parts:
                             continue
                             
-                        cmd = command[0].lower()
-                        args = command[1:]
+                        command = parts[0].lower()
+                        args = parts[1:]
                         
-                        # Add your command handling here...
-                        
-                    else:
-                        # Handle text input for conversation
-                        # Add your text processing here...
-                        pass
-                        
+                        try:
+                            # Document management commands
+                            if command == 'add' and len(args) > 0 and args[0] == 'source':
+                                await handle_doc_command(text_to_process, self.doc_store, console)
+                            elif command == 'list' and len(args) > 0 and args[0] == 'sources':
+                                await handle_doc_command(text_to_process, self.doc_store, console)
+                            elif command == 'remove' and len(args) > 0 and args[0] == 'source':
+                                await handle_doc_command(text_to_process, self.doc_store, console)
+                            # Conversation management commands
+                            elif command == 'add' and len(args) > 0 and args[0] == 'conversation':
+                                print(f"DEBUG: Starting conversation generation...")
+                                task = await handle_add_conversation(
+                                    console,
+                                    self.conv_store,
+                                    self.doc_store,
+                                    self.podcast_generator,
+                                    self.model_config.output_dir,
+                                    self.debug
+                                )
+                                if task:
+                                    self.conversation_tasks[task.conversation_id] = task
+                            elif command == 'list' and len(args) > 0 and args[0] == 'conversations':
+                                handle_list_conversations(console, self.conv_store)
+                            elif command == 'remove' and len(args) > 0 and args[0] == 'conversation':
+                                if len(args) > 1 and args[1].isdigit():
+                                    await handle_remove_conversation(
+                                        console,
+                                        self.conv_store,
+                                        int(args[1]),
+                                        self.conversation_tasks
+                                    )
+                                else:
+                                    console.print("[red]Please specify conversation ID")
+                            elif command == 'play':
+                                if len(args) > 0 and args[0].isdigit():
+                                    await play_conversation(console, self.conv_store, int(args[0]))
+                                else:
+                                    console.print("[red]Please specify conversation ID")
+                            elif command == 'show':
+                                if len(args) > 0 and args[0].isdigit():
+                                    show_conversation(console, self.conv_store, int(args[0]))
+                                else:
+                                    console.print("[red]Please specify conversation ID")
+                            elif command == 'help':
+                                self.help_system.show_help(console, *args)
+                            else:
+                                console.print(f"[red]Unknown command: {command}")
+                                
+                        except Exception as e:
+                            console.print(f"[red]Error processing command: {str(e)}")
+                            if self.debug:
+                                import traceback
+                                console.print(traceback.format_exc())
+                            
                 except KeyboardInterrupt:  # Handle Ctrl+C
                     console.print("\nOperation cancelled")
                     continue
                 except Exception as e:
                     console.print(f"[red]Error: {str(e)}")
-                    if hasattr(self, 'debug') and self.debug:
+                    if self.debug:
                         import traceback
                         console.print(traceback.format_exc())
                     continue
@@ -214,7 +265,7 @@ class AsyncApp:
         except Exception as e:
             console.print(f"[red]Error: {str(e)}")
             raise typer.Exit(1)
-    
+
 @app.command()
 def main(
     input_text: Optional[str] = typer.Argument(None, help="Input text (optional)"),
@@ -254,11 +305,13 @@ def main(
         llm_type=llm_type or LLMType(settings.llm_provider.value),
         llm_model=llm_model or settings.llm_model,
         tts_type=tts_type or TTSType(settings.tts_provider.value),
-        tts_model=tts_model or settings.tts_model
+        tts_model=tts_model or settings.tts_model,
+        output_dir=output_dir
     )
 
     # Initialize async app with model configuration
     async_app = AsyncApp(model_config)
+    async_app.debug = debug  # Set debug flag
 
     try:
         # Get event loop

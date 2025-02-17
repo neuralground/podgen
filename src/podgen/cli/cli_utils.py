@@ -1,41 +1,64 @@
-"""Enhanced CLI completion using argcomplete."""
+"""Enhanced CLI completion using readline."""
 
 import os
 import glob
 from pathlib import Path
-from typing import List, Optional, Dict, Set, Any
+from typing import List, Optional, Dict, Any
 import logging
 
 logger = logging.getLogger(__name__)
 
 def path_completer(prefix: str) -> List[str]:
     """Complete file and directory paths."""
-    if prefix.startswith('~'):
-        prefix = os.path.expanduser(prefix)
+    print(f"DEBUG: path_completer called with prefix='{prefix}'")
     
-    base_dir = os.path.dirname(prefix) if prefix else '.'
-    if not base_dir:
-        base_dir = '.'
-        
     try:
+        # Handle empty prefix
+        if not prefix:
+            prefix = '.'
+        
+        # Expand user directory if needed
+        if prefix.startswith('~'):
+            prefix = os.path.expanduser(prefix)
+        
+        # Get the directory to search in
+        if os.path.isabs(prefix):
+            base_dir = os.path.dirname(prefix)
+            file_prefix = os.path.basename(prefix)
+        else:
+            # For relative paths, join with current directory
+            abs_prefix = os.path.abspath(prefix)
+            base_dir = os.path.dirname(abs_prefix)
+            file_prefix = os.path.basename(prefix)
+        
+        print(f"DEBUG: base_dir='{base_dir}', file_prefix='{file_prefix}'")
+        
+        # If base_dir is empty, use current directory
+        if not base_dir:
+            base_dir = '.'
+        
+        # Get directory entries
         entries = os.listdir(base_dir)
         matches = []
         
         for entry in entries:
-            full_path = os.path.join(base_dir, entry)
-            # Only include entries that match the prefix
-            if full_path.startswith(prefix) or not prefix:
+            if entry.startswith(file_prefix):
+                if base_dir == '.':
+                    full_path = entry
+                else:
+                    full_path = os.path.join(os.path.dirname(prefix), entry)
+                
                 # Add trailing slash for directories
-                if os.path.isdir(full_path):
+                if os.path.isdir(os.path.join(base_dir, entry)):
                     matches.append(f"{full_path}/")
                 else:
                     matches.append(full_path)
         
-        # Sort matches with directories first
-        matches.sort(key=lambda x: (not x.endswith('/'), x.lower()))
-        return matches
+        print(f"DEBUG: Found matches: {matches}")
+        return sorted(matches, key=lambda x: (not x.endswith('/'), x.lower()))
         
-    except OSError:
+    except Exception as e:
+        print(f"DEBUG: Path completion error: {str(e)}")
         return []
 
 def command_completer(prefix: str, parsed_args: Dict[str, Any]) -> List[str]:
@@ -80,43 +103,66 @@ def command_completer(prefix: str, parsed_args: Dict[str, Any]) -> List[str]:
 
 def get_completion(text: str, state: int) -> Optional[str]:
     """Get completion for current input."""
-    if state == 0:
-        # Split input into command and args
-        parts = text.split()
-        
-        # Use appropriate completer based on input
-        if not text or text.startswith('/'):
-            matches = command_completer(text, {})
-        elif len(parts) >= 2 and parts[0] == '/add' and parts[1] == 'source':
-            # Pass the partial path to path completer
-            path_part = ' '.join(parts[2:]) if len(parts) > 2 else ''
-            matches = path_completer(path_part)
-        else:
-            matches = []
-            
-        # Store matches for subsequent states
-        get_completion.matches = matches
-    
     try:
-        return get_completion.matches[state]
-    except (AttributeError, IndexError):
+        print(f"\nDEBUG: Completion called with text='{text}', state={state}")
+        
+        # Get the current line buffer to understand context
+        import readline
+        buffer = readline.get_line_buffer()
+        print(f"DEBUG: Full line buffer: '{buffer}'")
+        
+        if state == 0:
+            # Check if we're in an "add source" context
+            if buffer.startswith('/add source'):
+                # Extract just the path part for completion
+                path_prefix = text
+                print(f"DEBUG: Path completion with prefix='{path_prefix}'")
+                matches = path_completer(path_prefix)
+                print(f"DEBUG: Path matches: {matches}")
+                # Don't add command prefix - return raw matches
+                get_completion.matches = matches
+            else:
+                parts = text.split()
+                if not text or text.startswith('/'):
+                    matches = command_completer(text, {})
+                    get_completion.matches = matches
+                else:
+                    get_completion.matches = []
+        
+        try:
+            match = get_completion.matches[state]
+            print(f"DEBUG: Returning match: '{match}' for state {state}")
+            return match
+        except (AttributeError, IndexError):
+            print(f"DEBUG: No match for state {state}")
+            return None
+            
+    except Exception as e:
+        print(f"DEBUG: Completion error: {str(e)}")
         return None
 
 def setup_completion() -> None:
     """Set up completion for the CLI."""
     import readline
     
+    print("DEBUG: Setting up completion...")  # Debug print
+    
     # Set completer function
     readline.set_completer(get_completion)
     
-    # Set word delimiters
+    # Set completer delimiters to just basic whitespace
     readline.set_completer_delims(' \t\n')
     
-    # Set completion mode
+    # Try both completion configurations
     if 'libedit' in readline.__doc__:
+        print("DEBUG: Using libedit configuration")  # Debug print
         readline.parse_and_bind('bind ^I rl_complete')
+        readline.parse_and_bind('bind ^I complete')
     else:
+        print("DEBUG: Using standard readline configuration")  # Debug print
         readline.parse_and_bind('tab: complete')
+        
+    print(f"DEBUG: Completion setup complete. Delimiters: {readline.get_completer_delims()}")  # Debug print
 
 # Initialize completion on import
 setup_completion()
