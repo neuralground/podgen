@@ -28,6 +28,7 @@ class PodcastGenerator:
         self.analyzer = content_analyzer
         self.conversation = conversation_gen
         self.tts = tts_service
+        self.debug = False
         self.audio = audio_processor
     
     async def generate_podcast(
@@ -38,10 +39,12 @@ class PodcastGenerator:
         config: Optional[Dict[str, Any]] = None,
         debug: bool = False
     ) -> Tuple[str, Path]:
-        """
-        Generate a complete podcast from documents.
-        """
+        """Generate a complete podcast from documents."""
         try:
+            if debug:
+                print(f"DEBUG: Starting podcast generation with {len(doc_ids)} documents")
+                print(f"DEBUG: Output path: {output_path}")
+                
             # Ensure output directory exists
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
@@ -68,16 +71,21 @@ class PodcastGenerator:
             if not doc_ids:
                 raise ValueError("No document IDs provided")
                 
-            # Analyze content (20%)
-            logger.info("Analyzing documents...")
+            # 1. Analyze content (20%)
+            if debug:
+                print("\nDEBUG: Stage 1 - Content Analysis")
             report_progress('analysis', 0.0, 0.2)
             
             try:
                 analysis = await self.analyzer.analyze_documents(doc_ids)
                 if not analysis:
                     raise ValueError("Content analysis returned no results")
+                if debug:
+                    print(f"DEBUG: Analysis found {len(analysis.get('main_topics', []))} topics")
+                    print(f"DEBUG: Analysis found {len(analysis.get('key_points', []))} key points")
             except Exception as e:
-                logger.error(f"Analysis failed: {e}")
+                if debug:
+                    print(f"DEBUG: Analysis failed: {str(e)}")
                 # Create minimal analysis structure
                 analysis = {
                     'main_topics': ['Document Overview'],
@@ -94,8 +102,9 @@ class PodcastGenerator:
             
             report_progress('analysis', 1.0, 0.2)
             
-            # Generate conversation (30%)
-            logger.info("Generating conversation...")
+            # 2. Generate conversation (30%)
+            if debug:
+                print("\nDEBUG: Stage 2 - Conversation Generation")
             report_progress('conversation', 0.0, 0.3)
             
             try:
@@ -105,17 +114,23 @@ class PodcastGenerator:
                 )
                 if not dialogue or not dialogue.turns:
                     raise ValueError("Dialogue generation returned no results")
+                if debug:
+                    print(f"DEBUG: Generated {len(dialogue.turns)} dialogue turns")
             except Exception as e:
-                logger.error(f"Dialogue generation failed: {e}")
+                if debug:
+                    print(f"DEBUG: Dialogue generation failed: {str(e)}")
                 raise
             
             report_progress('conversation', 1.0, 0.3)
             
             # Build transcript
             transcript = self._format_transcript(dialogue)
+            if debug:
+                print(f"DEBUG: Generated transcript ({len(transcript)} chars)")
             
-            # Synthesize speech (40%)
-            logger.info("Synthesizing speech...")
+            # 3. Synthesize speech (40%)
+            if debug:
+                print("\nDEBUG: Stage 3 - Speech Synthesis")
             report_progress('synthesis', 0.0, 0.4)
             
             audio_segments = []
@@ -123,14 +138,19 @@ class PodcastGenerator:
             
             for i, turn in enumerate(dialogue.turns):
                 try:
+                    if debug:
+                        print(f"DEBUG: Synthesizing turn {i+1}/{total_turns} for {turn.speaker.name}")
                     segment = await self.tts.synthesize_turn(
                         turn,
                         output_path.parent / f"segment_{i}.wav"
                     )
                     if segment and segment.exists():
                         audio_segments.append(segment)
+                        if debug:
+                            print(f"DEBUG: Successfully generated segment {i+1}")
                 except Exception as e:
-                    logger.error(f"Failed to synthesize turn {i}: {e}")
+                    if debug:
+                        print(f"DEBUG: Failed to synthesize turn {i+1}: {str(e)}")
                     continue
                 
                 report_progress('synthesis', (i + 1) / total_turns, 0.4)
@@ -138,8 +158,9 @@ class PodcastGenerator:
             if not audio_segments:
                 raise ValueError("No audio segments were generated successfully")
             
-            # Combine audio (10%)
-            logger.info("Processing audio...")
+            # 4. Combine audio (10%)
+            if debug:
+                print("\nDEBUG: Stage 4 - Audio Processing")
             report_progress('processing', 0.0, 0.1)
             
             try:
@@ -149,7 +170,8 @@ class PodcastGenerator:
                     debug=debug
                 )
             except Exception as e:
-                logger.error(f"Failed to combine audio: {e}")
+                if debug:
+                    print(f"DEBUG: Failed to combine audio: {str(e)}")
                 raise
             finally:
                 # Clean up temporary files
@@ -157,19 +179,24 @@ class PodcastGenerator:
                     try:
                         segment.unlink()
                     except Exception as e:
-                        logger.warning(f"Failed to delete temp file {segment}: {e}")
+                        if debug:
+                            print(f"DEBUG: Failed to delete temp file {segment}: {str(e)}")
             
             report_progress('processing', 1.0, 0.1)
             
             if not final_podcast or not final_podcast.exists():
                 raise ValueError("Final podcast file was not created")
             
+            if debug:
+                print("\nDEBUG: Podcast generation complete!")
+            
             return transcript, final_podcast
             
         except Exception as e:
-            logger.error(f"Podcast generation failed: {e}")
+            if debug:
+                print(f"DEBUG: Podcast generation failed: {str(e)}")
             raise
-    
+
     def _format_transcript(self, dialogue) -> str:
         """Format dialogue into a readable transcript."""
         if not dialogue or not dialogue.turns:

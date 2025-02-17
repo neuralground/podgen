@@ -112,17 +112,33 @@ async def handle_add_conversation(
         if not documents:
             console.print("[red]No documents available. Add some documents first.")
             return None
-        
+
+        if debug:
+            console.print("\n[yellow]Starting conversation generation in debug mode...")
+            console.print(f"Found {len(documents)} documents to process:")
+            for doc in documents:
+                console.print(f"  - {doc.title} ({doc.doc_type})")
+
         # Get configuration from user
         config = await prompt_conversation_config(console, doc_store, documents)
-        
+
+        if debug:
+            console.print("\n[yellow]Configuration:")
+            console.print(f"  Title: {config['title']}")
+            console.print(f"  Style: {config['style']}")
+            console.print(f"  Speakers: {', '.join(config['speaker_roles'])}")
+            console.print(f"  Target duration: {config['target_duration']} minutes")
+
         # Create output directory if needed
         output_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # Generate unique filename
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         audio_path = output_dir / f"podcast_{timestamp}.wav"
-        
+
+        if debug:
+            console.print(f"\n[yellow]Output will be saved to: {audio_path}")
+
         # Create pending conversation
         conversation = conv_store.create_pending(
             title=config["title"],
@@ -135,59 +151,87 @@ async def handle_add_conversation(
             }
         )
 
-        async def generate_podcast():
+        if debug:
+            console.print(f"\n[yellow]Created pending conversation with ID: {conversation.id}")
+
+        if not debug:
+            # For non-debug mode, start generation in background
+            async def generate_podcast():
+                try:
+                    def progress_callback(progress: float, stage: str = None):
+                        conv_store.update_progress(conversation.id, progress)
+
+                    transcript, audio_file = await podcast_gen.generate_podcast(
+                        doc_ids=[doc.id for doc in documents],
+                        output_path=audio_path,
+                        progress_callback=progress_callback,
+                        config=config,
+                        debug=False
+                    )
+
+                    conv_store.update_progress(
+                        conversation.id,
+                        1.0,
+                        transcript=transcript,
+                        audio_path=audio_file
+                    )
+
+                except Exception as e:
+                    logger.error(f"Failed to generate podcast: {e}")
+                    conv_store.mark_failed(conversation.id, str(e))
+
+            console.print(f"[green]Started generating podcast {conversation.id} in background.")
+            console.print(f"Title: {config['title']}")
+            console.print(f"Style: {config['style']}")
+            console.print("Use /list conversations to check the status.")
+            task = asyncio.create_task(generate_podcast())
+            task.conversation_id = conversation.id
+            return task
+
+        else:
+            # Debug mode - run directly in foreground
             try:
                 def progress_callback(progress: float, stage: str = None):
                     conv_store.update_progress(conversation.id, progress)
-                    if debug and stage:
-                        console.print(f"[yellow]Stage: {stage} - Progress: {progress:.1%}")
-                
-                if debug:
-                    console.print("[yellow]Starting content analysis...")
+                    if stage:
+                        console.print(f"[yellow]Stage: {stage}")
+                        console.print(f"Progress: {progress:.1%}")
+
+                console.print("\n[yellow]Starting podcast generation...")
+                console.print("[yellow]Step 1: Content Analysis")
+
+                # Generate podcast with debug output
                 transcript, audio_file = await podcast_gen.generate_podcast(
                     doc_ids=[doc.id for doc in documents],
                     output_path=audio_path,
                     progress_callback=progress_callback,
                     config=config,
-                    debug=debug
+                    debug=True  # Enable debug in podcast generator
                 )
-                
-                # Update with final content
+
+                # Update final status
                 conv_store.update_progress(
                     conversation.id,
                     1.0,
                     transcript=transcript,
                     audio_path=audio_file
                 )
-                
-                if debug:
-                    console.print("[green]Generation complete!")
-                
+
+                console.print("\n[green]Generation complete!")
+                console.print(f"Generated transcript ({len(transcript)} chars)")
+                console.print(f"Audio saved to: {audio_file}")
+
+                return None
+
             except Exception as e:
                 logger.error(f"Failed to generate podcast: {e}")
+                console.print(f"\n[red]Generation failed!")
+                console.print(f"Error: {str(e)}")
                 conv_store.mark_failed(conversation.id, str(e))
-                if debug:
-                    console.print(f"[red]Generation failed: {str(e)}")
-                    import traceback
-                    console.print(traceback.format_exc())
-        
-        if not debug:
-            # Start generation in background and return the task
-            console.print(f"[green]Started generating podcast {conversation.id} in background.")
-            console.print(f"Title: {config['title']}")
-            console.print(f"Style: {config['style']}")
-            console.print("Use /list conversations to check the status.")
-            task = asyncio.create_task(generate_podcast())
-            task.conversation_id = conversation.id  # Attach ID for cleanup
-            return task
-        else:
-            # Generate synchronously with debug output
-            console.print(f"[yellow]Starting podcast generation in debug mode...")
-            console.print(f"Title: {config['title']}")
-            console.print(f"Style: {config['style']}")
-            await generate_podcast()
-            return None
-            
+                import traceback
+                console.print(traceback.format_exc())
+                return None
+
     except Exception as e:
         logger.error(f"Failed to start podcast generation: {e}")
         console.print(f"[red]Error: {str(e)}")
@@ -195,6 +239,98 @@ async def handle_add_conversation(
             import traceback
             console.print(traceback.format_exc())
         return None
+
+async def handle_add_conversation_debug(
+    console: Console,
+    conv_store: ConversationStore,
+    doc_store: DocumentStore,
+    podcast_gen: PodcastGenerator,
+    output_dir: Path
+) -> None:
+    """Handle conversation generation in debug mode with visible step-by-step output."""
+    try:
+        # Get all documents
+        console.print("\n[yellow]Step 1: Loading Documents")
+        documents = doc_store.list_documents()
+        if not documents:
+            console.print("[red]No documents available. Add some documents first.")
+            return
+
+        console.print(f"Found {len(documents)} documents:")
+        for doc in documents:
+            console.print(f"  - {doc.title} ({doc.doc_type})")
+
+        # Get configuration from user
+        console.print("\n[yellow]Step 2: Configuration")
+        config = await prompt_conversation_config(console, doc_store, documents)
+        
+        console.print("\nConfiguration:")
+        console.print(f"  Title: {config['title']}")
+        console.print(f"  Style: {config['style']}")
+        console.print(f"  Speakers: {', '.join(config['speaker_roles'])}")
+        console.print(f"  Target duration: {config['target_duration']} minutes")
+        
+        # Create output directory
+        output_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        audio_path = output_dir / f"podcast_{timestamp}.wav"
+        console.print(f"\nOutput will be saved to: {audio_path}")
+        
+        # Create conversation record
+        console.print("\n[yellow]Step 3: Creating Conversation Record")
+        conversation = conv_store.create_pending(
+            title=config["title"],
+            metadata={
+                "document_ids": [doc.id for doc in documents],
+                "timestamp": timestamp,
+                "style": config["style"],
+                "speaker_roles": config["speaker_roles"],
+                "target_duration": config["target_duration"]
+            }
+        )
+        console.print(f"Created conversation with ID: {conversation.id}")
+
+        # Define progress callback
+        def progress_callback(progress: float, stage: str = None):
+            conv_store.update_progress(conversation.id, progress)
+            if stage:
+                console.print(f"[yellow]{stage} - Progress: {progress:.1%}")
+
+        # Generate podcast
+        console.print("\n[yellow]Step 4: Generating Podcast")
+        try:
+            transcript, audio_file = await podcast_gen.generate_podcast(
+                doc_ids=[doc.id for doc in documents],
+                output_path=audio_path,
+                progress_callback=progress_callback,
+                config=config,
+                debug=True
+            )
+            
+            # Update final status
+            conv_store.update_progress(
+                conversation.id,
+                1.0,
+                transcript=transcript,
+                audio_path=audio_file
+            )
+            
+            console.print("\n[green]Generation Complete!")
+            console.print(f"Generated transcript ({len(transcript)} chars)")
+            console.print(f"Audio saved to: {audio_file}")
+            
+        except Exception as e:
+            console.print(f"\n[red]Generation failed!")
+            console.print(f"Error: {str(e)}")
+            conv_store.mark_failed(conversation.id, str(e))
+            import traceback
+            console.print(traceback.format_exc())
+            
+    except Exception as e:
+        console.print(f"\n[red]Setup failed!")
+        console.print(f"Error: {str(e)}")
+        import traceback
+        console.print(traceback.format_exc())
 
 def handle_list_conversations(
     console: Console,

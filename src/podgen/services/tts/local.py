@@ -21,6 +21,7 @@ class CoquiTTSEngine(TTSEngine):
     
     DEFAULT_MODEL = "tts_models/en/vctk/vits"
     
+    # Map speaker profiles to VCTK speaker IDs
     SPEAKER_MAPPINGS = {
         'professional_host': 'p262',  # Clear, professional male
         'casual_host': 'p276',       # Warm, friendly female
@@ -33,9 +34,10 @@ class CoquiTTSEngine(TTSEngine):
     def __init__(
         self,
         model_name: Optional[str] = None,
-        audio_config: Optional[AudioConfig] = None
+        audio_config: Optional[AudioConfig] = None,
+        debug: bool = False
     ):
-        super().__init__(model_name or self.DEFAULT_MODEL, audio_config)
+        super().__init__(model_name or self.DEFAULT_MODEL, audio_config, debug)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = None
         self.loaded = False
@@ -45,13 +47,23 @@ class CoquiTTSEngine(TTSEngine):
         """Load Coqui TTS model."""
         try:
             from TTS.api import TTS
+            
+            if self.debug:
+                logger.info(f"Loading Coqui TTS model: {self.model_name}")
+                
             self.model = await asyncio.get_event_loop().run_in_executor(
                 self._executor,
                 lambda: TTS(self.model_name).to(self.device)
             )
             self.loaded = True
-            logger.info(f"Loaded Coqui TTS model: {self.model_name}")
+            
+            if self.debug:
+                logger.info(f"Successfully loaded Coqui TTS model: {self.model_name}")
+                logger.info(f"Using device: {self.device}")
+                logger.info(f"Available speakers: {self.model.speakers}")
+            
             return True
+            
         except Exception as e:
             logger.error(f"Failed to load Coqui TTS model: {e}")
             return False
@@ -68,29 +80,52 @@ class CoquiTTSEngine(TTSEngine):
                 if not await self.load_model():
                     return False
             
-            # Get speaker if using multi-speaker model
+            # Map voice_id to VCTK speaker
             speaker = None
             if voice_config and voice_config.voice_id:
-                speaker = self.SPEAKER_MAPPINGS.get(voice_config.voice_id)
+                if voice_config.voice_id in self.SPEAKER_MAPPINGS:
+                    speaker = self.SPEAKER_MAPPINGS[voice_config.voice_id]
+                else:
+                    # If voice_id matches VCTK format directly (e.g., 'p262')
+                    speaker = voice_config.voice_id
+
+            if not speaker:
+                # Default to a specific speaker if none provided
+                speaker = 'p262'
+            
+            if self.debug:
+                logger.info(f"Synthesizing text with speaker {speaker}")
+                logger.info(f"Text length: {len(text)} chars")
             
             # Run synthesis in thread pool
             wav = await asyncio.get_event_loop().run_in_executor(
                 self._executor,
                 lambda: self.model.tts(
                     text=text,
-                    speaker=speaker,
-                    language=voice_config.language if voice_config else None
+                    speaker=speaker
                 )
             )
             
-            # Save audio
-            sf.write(output_path, wav, self.audio_config.sample_rate)
-            return True
+            # Save audio with correct sample rate
+            import soundfile as sf
+            sf.write(str(output_path), wav, self.model.synthesizer.output_sample_rate)
+            
+            if output_path.exists() and output_path.stat().st_size > 0:
+                if self.debug:
+                    logger.info(f"Successfully generated audio: {output_path}")
+                    logger.info(f"Audio file size: {output_path.stat().st_size} bytes")
+                return True
+            else:
+                logger.error(f"Generated audio file is empty or missing: {output_path}")
+                return False
             
         except Exception as e:
             logger.error(f"Coqui TTS synthesis failed: {e}")
+            if self.debug:
+                import traceback
+                logger.error(traceback.format_exc())
             return False
-
+        
 class BarkEngine(TTSEngine):
     """Local TTS using Bark text-to-speech."""
     

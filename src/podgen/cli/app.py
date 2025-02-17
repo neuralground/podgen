@@ -18,6 +18,7 @@ from ..storage.json_storage import JSONStorage
 from ..storage.conversation import ConversationStore
 from .conversation_commands import (
     handle_add_conversation,
+    handle_add_conversation_debug,
     handle_list_conversations,
     handle_remove_conversation,
     handle_remove_all_conversations,
@@ -206,19 +207,30 @@ class AsyncApp:
                                 await handle_doc_command(text_to_process, self.doc_store, console)
                             elif command == 'remove' and len(args) > 0 and args[0] == 'source':
                                 await handle_doc_command(text_to_process, self.doc_store, console)
-                            # Conversation management commands
                             elif command == 'add' and len(args) > 0 and args[0] == 'conversation':
-                                print(f"DEBUG: Starting conversation generation...")
-                                task = await handle_add_conversation(
-                                    console,
-                                    self.conv_store,
-                                    self.doc_store,
-                                    self.podcast_generator,
-                                    self.model_config.output_dir,
-                                    self.debug
-                                )
-                                if task:
-                                    self.conversation_tasks[task.conversation_id] = task
+                                debug_mode = len(args) > 1 and args[1] == 'debug'
+                                if debug_mode:
+                                    # Run with debug output
+                                    print("DEBUG: Starting conversation generation in debug mode...")
+                                    await handle_add_conversation_debug(
+                                        console,
+                                        self.conv_store,
+                                        self.doc_store,
+                                        self.podcast_generator,
+                                        self.model_config.output_dir
+                                    )
+                                else:
+                                    # Run asynchronously in normal mode
+                                    print("DEBUG: Starting conversation generation in async mode...")
+                                    task = await handle_add_conversation(
+                                        console,
+                                        self.conv_store,
+                                        self.doc_store,
+                                        self.podcast_generator,
+                                        self.model_config.output_dir
+                                    )
+                                    if task:
+                                        self.conversation_tasks[task.conversation_id] = task
                             elif command == 'list' and len(args) > 0 and args[0] == 'conversations':
                                 handle_list_conversations(console, self.conv_store)
                             elif command == 'remove' and len(args) > 0 and args[0] == 'conversation':

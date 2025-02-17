@@ -6,6 +6,7 @@ import logging
 import asyncio
 import subprocess
 from abc import ABC, abstractmethod
+from ...models.dialogue import DialogueTurn
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,13 @@ class TTSEngine(ABC):
     def __init__(
         self,
         model_name: Optional[str] = None,
-        audio_config: Optional[AudioConfig] = None
+        audio_config: Optional[AudioConfig] = None,
+        debug: bool = False
     ):
         self.model_name = model_name
         self.audio_config = audio_config or AudioConfig()
         self.loaded = False
+        self.debug = debug
     
     @abstractmethod
     async def load_model(self) -> bool:
@@ -103,8 +106,8 @@ class TTSService:
     """High-level TTS service managing multiple engines."""
     
     def __init__(self):
-        self.engines: List[TTSEngine] = []
-        self.default_engine: Optional[TTSEngine] = None
+        self.engines = []
+        self.default_engine = None
     
     def add_engine(self, engine: TTSEngine, default: bool = False) -> None:
         """Add a TTS engine to the service."""
@@ -158,5 +161,44 @@ class TTSService:
             
         except Exception as e:
             logger.error(f"Speech synthesis failed: {e}")
+            return None
+
+    async def synthesize_turn(
+        self,
+        turn: DialogueTurn,
+        output_path: Path,
+        engine: Optional[TTSEngine] = None
+    ) -> Optional[Path]:
+        """
+        Synthesize a dialogue turn.
+        
+        Args:
+            turn: The dialogue turn to synthesize
+            output_path: Where to save the audio file
+            engine: Optional specific engine to use
+            
+        Returns:
+            Path to the generated audio file or None if synthesis failed
+        """
+        try:
+            # Create voice configuration from speaker
+            voice_config = VoiceConfig(
+                voice_id=turn.speaker.voice_id,
+                language="en",  # Default to English
+                speed=1.0,      # Default speed
+                pitch=1.0,      # Default pitch
+                stability=0.5    # Default stability
+            )
+            
+            # Use the synthesize method with the voice configuration
+            return await self.synthesize(
+                text=turn.content,
+                output_path=output_path,
+                voice_config=voice_config,
+                engine=engine
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to synthesize turn for {turn.speaker.name}: {e}")
             return None
         
