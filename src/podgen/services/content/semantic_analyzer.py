@@ -1,8 +1,10 @@
+# src/podgen/services/content/semantic_analyzer.py
+
 from typing import List, Dict, Any, Optional
 import numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
 import logging
-from ..llm_service import LLMService
+from podgen.services.llm import LLMService
 from .text_chunker import TextChunk
 
 logger = logging.getLogger(__name__)
@@ -48,7 +50,7 @@ class SemanticAnalyzer:
     ) -> List[TextChunk]:
         """Find chunks most semantically related to query text."""
         try:
-            # Get query embedding (synchronous call)
+            # Get query embedding
             response = self.llm.client.embeddings.create(
                 model="text-embedding-ada-002",
                 input=query_text
@@ -106,4 +108,4 @@ class SemanticAnalyzer:
                     })
         
         return relationships
-
+    

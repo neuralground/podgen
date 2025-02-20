@@ -10,11 +10,11 @@ from .content_analyzer import ContentAnalyzer
 from .podcast_generator import PodcastGenerator
 
 # Import LLM service and types
-from .llm_service import (
+from .llm import (
     LLMService,
     LLMProvider,
     OllamaService,
-    LocalLLMFactory,
+    create_llm_service,
     SYSTEM_PROMPTS
 )
 
@@ -38,18 +38,6 @@ class ModelType(str, Enum):
     CLOUD = "cloud"
     SYSTEM = "system"
 
-def create_llm_service(
-    provider: LLMProvider,
-    model_name: Optional[str] = None,
-    **kwargs
-) -> LLMService:
-    """Create LLM service based on provider."""
-    if provider == LLMProvider.OPENAI:
-        from openai import OpenAI
-        return OpenAI(api_key=kwargs.get('api_key'))
-    else:
-        return LocalLLMFactory.create_service(provider, model_name, **kwargs)
-
 def create_tts_service(
     provider: TTSProvider,
     model_name: Optional[str] = None,
@@ -69,7 +57,7 @@ __all__ = [
     "LLMService",
     "LLMProvider",
     "OllamaService",
-    "LocalLLMFactory",
+    "create_llm_service",
     "SYSTEM_PROMPTS",
     
     # TTS types and services
@@ -84,6 +72,5 @@ __all__ = [
     
     # Enums and factories
     "ModelType",
-    "create_llm_service",
     "create_tts_service"
 ]

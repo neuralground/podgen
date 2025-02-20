@@ -458,17 +458,18 @@ async def handle_remove_all_conversations(
         else:
             console.print("[red]Failed to remove some conversations")
 
-def handle_remove_all_sources(
+async def handle_remove_all_sources(
     console: Console,
     doc_store: DocumentStore
 ) -> None:
-    """Handle the /remove sources all command."""
+    """Handle the /remove all sources command."""
     documents = doc_store.list_documents()
     if not documents:
         console.print("No sources to remove")
         return
         
     if Confirm.ask(f"Remove all {len(documents)} sources?"):
+        # Use list comprehension to handle potential async operations
         success = all(doc_store.remove(doc.id) for doc in documents)
         if success:
             console.print(f"[green]Removed {len(documents)} sources")
@@ -511,12 +512,15 @@ async def play_conversation(
     except Exception as e:
         console.print(f"[red]Failed to play audio: {e}")
 
+# In src/podgen/cli/conversation_commands.py
+
 def show_conversation(
     console: Console,
     conv_store: ConversationStore,
+    doc_store: DocumentStore,
     conv_id: int
 ) -> None:
-    """Show a conversation's transcript."""
+    """Show a conversation's details and transcript."""
     conversation = conv_store.get(conv_id)
     if not conversation:
         console.print(f"[red]Conversation not found: {conv_id}")
@@ -530,11 +534,66 @@ def show_conversation(
         console.print(f"[red]This conversation failed to generate: {conversation.error}")
         return
     
-    if not conversation.transcript:
-        console.print("[red]No transcript available")
-        return
+    # Display podcast metadata
+    console.print("\n[bold blue]Podcast Details:[/bold blue]")
+    console.print(f"Title: {conversation.title}")
+    console.print(f"Created: {conversation.created_date.strftime('%Y-%m-%d %H:%M')}")
+    console.print(f"Status: [green]{conversation.status.value}[/green]")
     
-    # Display transcript with rich formatting
-    console.print("\n[bold]Transcript:[/bold]\n")
-    console.print(Markdown(conversation.transcript))
+    # Get conversation style and speakers
+    metadata = conversation.metadata
+    style = metadata.get('style', 'Not specified')
+    console.print(f"\nConversation Style: {style}")
+    
+    # Display speakers and their roles
+    speaker_roles = metadata.get('speaker_roles', [])
+    if speaker_roles:
+        console.print("\n[bold]Speakers:[/bold]")
+        for role in speaker_roles:
+            speaker = DEFAULT_SPEAKER_PROFILES.get(role)
+            if speaker:
+                console.print(f"- {speaker.name}: {speaker.style}")
+    
+    # Display source documents
+    doc_ids = metadata.get('document_ids', [])
+    if doc_ids:
+        console.print("\n[bold]Source Documents:[/bold]")
+        for doc_id in doc_ids:
+            doc = doc_store.get_document(doc_id)
+            if doc:
+                console.print(f"- {doc.title} ({doc.doc_type})")
+                if doc.metadata.get('url'):
+                    console.print(f"  URL: {doc.metadata['url']}")
+    
+    # Display model information
+    console.print("\n[bold]Model Information:[/bold]")
+    llm_provider = metadata.get('llm_provider', 'Not specified')
+    llm_model = metadata.get('llm_model', 'Not specified')
+    tts_provider = metadata.get('tts_provider', 'Not specified')
+    tts_model = metadata.get('tts_model', 'Not specified')
+    
+    console.print(f"Content Analysis & Dialogue: {llm_provider} ({llm_model})")
+    console.print(f"Text-to-Speech: {tts_provider}" + (f" ({tts_model})" if tts_model != 'Not specified' else ""))
+    
+    # Display audio information if available
+    if conversation.audio_path:
+        console.print(f"\nAudio File: {conversation.audio_path}")
+        try:
+            size = conversation.audio_path.stat().st_size
+            if size > 1024*1024:
+                size = f"{size/(1024*1024):.1f}MB"
+            elif size > 1024:
+                size = f"{size/1024:.1f}KB"
+            else:
+                size = f"{size}B"
+            console.print(f"File Size: {size}")
+        except:
+            pass
+    
+    # Display transcript
+    if conversation.transcript:
+        console.print("\n[bold]Transcript:[/bold]\n")
+        console.print(Markdown(conversation.transcript))
+    else:
+        console.print("\n[red]No transcript available[/red]")
 

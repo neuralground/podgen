@@ -1,5 +1,6 @@
 from typing import List, Dict, Any, Optional
-from .llm_service import LLMService, LLMProvider, create_llm_service
+from podgen.services.llm import LLMService, LLMProvider, create_llm_service
+from podgen.services.llm.base import SYSTEM_PROMPTS
 from .content import (
     ContentExtractorService,
     TextChunker,
@@ -38,31 +39,17 @@ class ContentAnalyzer:
         self.semantic_analyzer = SemanticAnalyzer(self.llm)
 
     async def analyze_documents(self, doc_ids: List[int]) -> Dict[str, Any]:
-        """
-        Analyze multiple documents using LLM for deep understanding.
-
-        Args:
-            doc_ids: List of document IDs to analyze
-
-        Returns:
-            Rich analysis including topics, insights, and conversation structure
-        """
-        # Collect and extract content from all documents
+        """Analyze multiple documents using LLM for deep understanding."""
         documents = []
-        chunks = []
-
+        all_content = []
+        
+        # First, load all documents
         for doc_id in doc_ids:
             doc = self.doc_store.get_document(doc_id)
             if doc:
                 content = await self._load_document_content(doc)
                 if content:
-                    # Create chunks from the document
-                    doc_chunks = self.text_chunker.chunk_document(
-                        content,
-                        metadata={'doc_id': doc_id}
-                    )
-                    chunks.extend(doc_chunks)
-
+                    all_content.append(content)
                     documents.append({
                         'id': doc_id,
                         'content': content,
@@ -72,29 +59,54 @@ class ContentAnalyzer:
         if not documents:
             raise ValueError("No valid documents to analyze")
 
-        # Compute embeddings for all chunks
-        await self.semantic_analyzer.compute_chunk_embeddings(chunks)
-
-        # Find relationships between chunks
-        relationships = self.semantic_analyzer.analyze_chunk_relationships(chunks)
-
-        # Perform LLM analysis
         try:
-            analysis = await self.llm.analyze_content(documents)
+            # Create a focused analysis prompt
+            analysis_prompt = f"""Analyze this document and extract key information for a podcast discussion.
+        
+DOCUMENT CONTENT:
+{all_content[0][:3000]}  # Using first 3000 chars
 
-            # Enhance analysis with chunk relationships
-            analysis['chunk_relationships'] = relationships
+Provide a structured analysis in this JSON format:
+{{
+    "main_topics": ["List 3-5 main topics from the document"],
+    "key_points": [
+        {{"point": "Specific information from the document", 
+         "context": "Direct quote or context",
+         "importance": "Why this is significant"}}
+    ],
+    "technical_details": [
+        {{"term": "Technical term from document",
+         "explanation": "Clear explanation"}}
+    ],
+    "suggested_structure": [
+        {{"segment": "segment_name",
+         "topics": ["Specific topics to cover"],
+         "key_details": ["Important details to mention"]}}
+    ],
+    "interesting_elements": [
+        {{"element": "Interesting item from document",
+         "discussion_angle": "How to present this in conversation"}}
+    ]
+}}
 
-            # Add document metadata
-            analysis['document_info'] = [
-                {
-                    'id': doc['id'],
-                    'title': doc['metadata'].get('title', f"Document {doc['id']}"),
-                    'type': doc['metadata'].get('type', 'unknown'),
-                    'length': len(doc['content'])
-                }
-                for doc in documents
-            ]
+Ensure all information comes directly from the document content."""
+
+            # Get analysis from LLM
+            analysis = await self.llm.generate_json(
+                prompt=analysis_prompt,
+                system_prompt="You are an expert content analyzer. Extract specific, concrete information directly from the provided document. Do not make up or generalize content."
+            )
+
+            # Validate we got meaningful content
+            if not analysis or not isinstance(analysis.get('main_topics'), list) or not analysis.get('key_points'):
+                raise ValueError("Analysis did not produce required content structure")
+
+            # Add document info
+            analysis['document_info'] = [{
+                'id': doc['id'],
+                'title': doc['metadata'].get('title', f"Document {doc['id']}"),
+                'content_preview': doc['content'][:200] if doc['content'] else None
+            } for doc in documents]
 
             return analysis
 

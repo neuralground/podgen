@@ -1,3 +1,5 @@
+# src/podgen/cli/app.py
+
 """Main CLI application module."""
 
 import typer
@@ -32,8 +34,8 @@ from ..services.podcast_generator import PodcastGenerator
 from ..services.content_analyzer import ContentAnalyzer
 from ..services.conversation import ConversationGenerator
 from ..services.tts import TTSService, TTSProvider, create_engine
+from ..services.llm import LLMProvider
 from ..services.audio import AudioProcessor
-from ..services.llm_service import LLMProvider
 
 # Add CLI options as enums
 class LLMType(str, Enum):
@@ -205,8 +207,37 @@ class AsyncApp:
                                 await handle_doc_command(text_to_process, self.doc_store, console)
                             elif command == 'list' and len(args) > 0 and args[0] == 'sources':
                                 await handle_doc_command(text_to_process, self.doc_store, console)
-                            elif command == 'remove' and len(args) > 0 and args[0] == 'source':
-                                await handle_doc_command(text_to_process, self.doc_store, console)
+                            elif command == 'remove':
+                                if len(args) >= 2:
+                                    try:
+                                        if args[0] == 'all' and args[1] == 'sources':
+                                            # Call the async handler for removing all sources
+                                            await handle_remove_all_sources(console, self.doc_store)
+                                        elif args[0] == 'all' and args[1] == 'conversations':
+                                            # Call the async handler for removing all conversations
+                                            await handle_remove_all_conversations(console, self.conv_store, self.conversation_tasks)
+                                        elif args[0] == 'source' and len(args) > 1:
+                                            await handle_doc_command(text_to_process, self.doc_store, console)
+                                        elif args[0] == 'conversation' and len(args) > 1 and args[1].isdigit():
+                                            await handle_remove_conversation(
+                                                console,
+                                                self.conv_store,
+                                                int(args[1]),
+                                                self.conversation_tasks
+                                            )
+                                        else:
+                                            console.print("[red]Invalid remove command. Use:")
+                                            console.print("  /remove source <id>")
+                                            console.print("  /remove conversation <id>")
+                                            console.print("  /remove all sources")
+                                            console.print("  /remove all conversations")
+                                    except Exception as e:
+                                        console.print(f"[red]Error removing items: {str(e)}")
+                                        if self.debug:
+                                            import traceback
+                                            console.print(traceback.format_exc())
+                                else:
+                                    console.print("[red]Please specify what to remove")
                             elif command == 'add' and len(args) > 0 and args[0] == 'conversation':
                                 debug_mode = len(args) > 1 and args[1] == 'debug'
                                 if debug_mode:
@@ -233,26 +264,22 @@ class AsyncApp:
                                         self.conversation_tasks[task.conversation_id] = task
                             elif command == 'list' and len(args) > 0 and args[0] == 'conversations':
                                 handle_list_conversations(console, self.conv_store)
-                            elif command == 'remove' and len(args) > 0 and args[0] == 'conversation':
-                                if len(args) > 1 and args[1].isdigit():
-                                    await handle_remove_conversation(
-                                        console,
-                                        self.conv_store,
-                                        int(args[1]),
-                                        self.conversation_tasks
-                                    )
-                                else:
-                                    console.print("[red]Please specify conversation ID")
                             elif command == 'play':
                                 if len(args) > 0 and args[0].isdigit():
                                     await play_conversation(console, self.conv_store, int(args[0]))
                                 else:
                                     console.print("[red]Please specify conversation ID")
                             elif command == 'show':
-                                if len(args) > 0 and args[0].isdigit():
-                                    show_conversation(console, self.conv_store, int(args[0]))
+                                if len(args) > 0:
+                                    if args[0] == 'conversation':
+                                        if len(args) > 1 and args[1].isdigit():
+                                            show_conversation(console, self.conv_store, self.doc_store, int(args[1]))
+                                        else:
+                                            console.print("[red]Please specify conversation ID")
+                                    else:
+                                        console.print(f"[red]Unknown show target: {args[0]}")
                                 else:
-                                    console.print("[red]Please specify conversation ID")
+                                    console.print("[red]Please specify what to show")
                             elif command == 'help':
                                 self.help_system.show_help(console, *args)
                             else:

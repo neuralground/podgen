@@ -30,7 +30,9 @@ class PodcastGenerator:
         self.tts = tts_service
         self.debug = False
         self.audio = audio_processor
-    
+
+# In src/podgen/services/podcast_generator.py, update the generate_podcast method
+
     async def generate_podcast(
         self,
         doc_ids: List[int],
@@ -50,27 +52,20 @@ class PodcastGenerator:
             
             def report_progress(stage: str, stage_progress: float, weight: float):
                 if progress_callback:
-                    # Calculate overall progress based on stage weights
                     stage_weights = {
                         'analysis': 0.2,
                         'conversation': 0.3,
                         'synthesis': 0.4,
                         'processing': 0.1
                     }
-                    
-                    base_progress = sum(
-                        stage_weights[s] 
-                        for s in stage_weights 
-                        if s < stage
-                    )
-                    
+                    base_progress = sum(stage_weights[s] for s in stage_weights if s < stage)
                     total_progress = base_progress + (stage_progress * weight)
                     progress_callback(total_progress, stage if debug else None)
             
             # Validate document IDs
             if not doc_ids:
                 raise ValueError("No document IDs provided")
-                
+            
             # 1. Analyze content (20%)
             if debug:
                 print("\nDEBUG: Stage 1 - Content Analysis")
@@ -86,7 +81,6 @@ class PodcastGenerator:
             except Exception as e:
                 if debug:
                     print(f"DEBUG: Analysis failed: {str(e)}")
-                # Create minimal analysis structure
                 analysis = {
                     'main_topics': ['Document Overview'],
                     'key_points': [{'point': 'Key document contents', 'source': 'Analysis'}],
@@ -100,6 +94,10 @@ class PodcastGenerator:
                     ]
                 }
             
+            # Add system information to analysis
+            analysis['llm_provider'] = self.analyzer.llm.provider if hasattr(self.analyzer.llm, 'provider') else str(type(self.analyzer.llm).__name__)
+            analysis['llm_model'] = self.analyzer.llm.model if hasattr(self.analyzer.llm, 'model') else "default"
+            
             report_progress('analysis', 1.0, 0.2)
             
             # 2. Generate conversation (30%)
@@ -108,9 +106,20 @@ class PodcastGenerator:
             report_progress('conversation', 0.0, 0.3)
             
             try:
+                # Add additional metadata to config
+                if not config:
+                    config = {}
+                config.update({
+                    'document_ids': doc_ids,
+                    'llm_provider': analysis['llm_provider'],
+                    'llm_model': analysis['llm_model'],
+                    'tts_provider': str(type(self.tts).__name__),
+                    'tts_model': getattr(self.tts, 'model_name', None)
+                })
+                
                 dialogue = await self.conversation.generate_dialogue(
                     analysis,
-                    config or {}
+                    config
                 )
                 if not dialogue or not dialogue.turns:
                     raise ValueError("Dialogue generation returned no results")
@@ -127,7 +136,7 @@ class PodcastGenerator:
             transcript = self._format_transcript(dialogue)
             if debug:
                 print(f"DEBUG: Generated transcript ({len(transcript)} chars)")
-            
+                   
             # 3. Synthesize speech (40%)
             if debug:
                 print("\nDEBUG: Stage 3 - Speech Synthesis")
