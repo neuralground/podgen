@@ -9,7 +9,7 @@ import subprocess
 import os
 import logging
 import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 import asyncio
 from pathlib import Path
 
@@ -22,6 +22,7 @@ from ..models.speaker_profiles import (
     get_available_styles,
     get_available_speaker_roles
 )
+from .audio_player import AudioPlayer
 
 logger = logging.getLogger(__name__)
 
@@ -479,9 +480,25 @@ async def handle_remove_all_sources(
 async def play_conversation(
     console: Console,
     conv_store: ConversationStore,
-    conv_id: int
+    conv_id: Union[str, int]
 ) -> None:
     """Play a conversation's audio."""
+    # Extract ID from command if needed
+    if isinstance(conv_id, str):
+        parts = conv_id.split()
+        if len(parts) > 1:
+            try:
+                conv_id = int(parts[-1])  # Get last part as ID
+            except ValueError:
+                console.print("[red]Please specify a valid conversation ID")
+                return
+    
+    try:
+        conv_id = int(conv_id)
+    except ValueError:
+        console.print("[red]Please specify a valid conversation ID")
+        return
+    
     conversation = conv_store.get(conv_id)
     if not conversation:
         console.print(f"[red]Conversation not found: {conv_id}")
@@ -500,19 +517,12 @@ async def play_conversation(
         return
     
     try:
-        # Use appropriate audio player based on platform
-        loop = asyncio.get_running_loop()
-        if platform.system() == "Darwin":  # macOS
-            await loop.run_in_executor(None, lambda: subprocess.run(["afplay", str(conversation.audio_path)]))
-        elif platform.system() == "Windows":
-            os.startfile(conversation.audio_path)
-        else:  # Linux and others
-            await loop.run_in_executor(None, lambda: subprocess.run(["xdg-open", str(conversation.audio_path)]))
+        # Create and use audio player
+        player = AudioPlayer(console)
+        await player.play(conversation.audio_path)
             
     except Exception as e:
         console.print(f"[red]Failed to play audio: {e}")
-
-# In src/podgen/cli/conversation_commands.py
 
 def show_conversation(
     console: Console,

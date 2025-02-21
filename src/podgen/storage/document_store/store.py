@@ -18,8 +18,127 @@ from ...services.content.extractors import (
 
 logger = logging.getLogger(__name__)
 
+# In src/podgen/storage/document_store/store.py
+
 class DocumentStore:
-    """Manages document storage and retrieval with content caching"""
+    def _init_db(self):
+        """Initialize the database schema"""
+        print("DEBUG: Initializing document store database")
+
+        with sqlite3.connect(self.db_path) as conn:
+            c = conn.cursor()
+            
+            # Create documents table with original_content field
+            c.execute("""
+                CREATE TABLE IF NOT EXISTS documents (
+                    id INTEGER PRIMARY KEY,
+                    source TEXT NOT NULL,
+                    doc_type TEXT NOT NULL,
+                    hash TEXT NOT NULL,
+                    original_content BLOB,  -- Store original file content
+                    local_path TEXT,
+                    content TEXT,
+                    content_hash TEXT,
+                    content_date TIMESTAMP,
+                    added_date TIMESTAMP NOT NULL,
+                    last_accessed TIMESTAMP NOT NULL,
+                    extracted_text TEXT,
+                    metadata TEXT
+                )
+            """)
+            
+            # Add indexes
+            c.execute("CREATE INDEX IF NOT EXISTS idx_documents_hash ON documents(hash)")
+            c.execute("CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)")
+            
+            conn.commit()
+            print("DEBUG: Database initialization complete")
+
+    async def add_file(self, file_path: Path) -> Document:
+        """Add a file to the document store with content caching."""
+        if not file_path.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        try:
+            # Read the original file content
+            original_content = file_path.read_bytes()
+            file_hash = self._compute_hash(original_content)
+            
+            with sqlite3.connect(self.db_path) as conn:
+                c = conn.cursor()
+                c.execute("SELECT id FROM documents WHERE hash = ?", (file_hash,))
+                if c.fetchone():
+                    raise ValueError(f"File already exists in store: {file_path}")
+                
+                # Store locally for initial processing
+                local_path = self._store_local_file(file_path)
+                
+                # Extract content
+                extractor = next(
+                    (ext for ext in self.extractors if ext.supports(str(file_path))),
+                    None
+                )
+                
+                if not extractor:
+                    raise ValueError(f"No suitable extractor found for {file_path}")
+                
+                metadata = {}
+                content = await extractor.extract(str(file_path), metadata)
+                
+                if content is None:
+                    raise ValueError(f"Failed to extract content from {file_path}")
+                
+                now = datetime.datetime.now()
+                content_hash = self._compute_hash(content)
+                
+                # Insert document with original content
+                c.execute("""
+                    INSERT INTO documents 
+                    (source, doc_type, hash, original_content, local_path, content, 
+                     content_hash, content_date, added_date, last_accessed, 
+                     extracted_text, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    str(file_path),
+                    'file',
+                    file_hash,
+                    original_content,  # Store the original content
+                    str(local_path),
+                    content,
+                    content_hash,
+                    now.isoformat(),
+                    now.isoformat(),
+                    now.isoformat(),
+                    content,
+                    json.dumps(metadata)
+                ))
+                
+                doc_id = c.lastrowid
+                
+                # Remove local file as we have stored the content
+                try:
+                    local_path.unlink()
+                except Exception as e:
+                    logger.warning(f"Failed to remove temporary file {local_path}: {e}")
+                
+                return Document(
+                    id=doc_id,
+                    source=str(file_path),
+                    doc_type='file',
+                    hash=file_hash,
+                    local_path=None,  # No longer needed
+                    content=content,
+                    content_hash=content_hash,
+                    content_date=now,
+                    added_date=now,
+                    last_accessed=now,
+                    extracted_text=content,
+                    metadata=metadata
+                )
+                
+        except Exception as e:
+            logger.error(f"Error adding file: {e}")
+            raise
 
     def __init__(self, db_path: Path):
         """Initialize document storage with database path"""
@@ -37,44 +156,6 @@ class DocumentStore:
             WebExtractor()
         ]
 
-    def _init_db(self):
-        """Initialize the database schema"""
-        print("DEBUG: Initializing document store database")
-        with sqlite3.connect(self.db_path) as conn:
-            c = conn.cursor()
-            
-            # Create documents table
-            c.execute("""
-                CREATE TABLE IF NOT EXISTS documents (
-                    id INTEGER PRIMARY KEY,
-                    source TEXT NOT NULL,
-                    doc_type TEXT NOT NULL,
-                    hash TEXT NOT NULL,
-                    local_path TEXT,
-                    content TEXT,
-                    content_hash TEXT,
-                    content_date TIMESTAMP,
-                    added_date TIMESTAMP NOT NULL,
-                    last_accessed TIMESTAMP NOT NULL,
-                    extracted_text TEXT,
-                    metadata TEXT
-                )
-            """)
-            
-            # Create indexes
-            c.execute("""
-                CREATE INDEX IF NOT EXISTS idx_documents_hash 
-                ON documents(hash)
-            """)
-            
-            c.execute("""
-                CREATE INDEX IF NOT EXISTS idx_documents_content_hash 
-                ON documents(content_hash)
-            """)
-            
-            conn.commit()
-            print("DEBUG: Database initialization complete")
-
     def _compute_hash(self, content: Union[str, bytes]) -> str:
         """Compute SHA-256 hash of content"""
         if isinstance(content, str):
@@ -89,94 +170,6 @@ class DocumentStore:
             shutil.copy2(source_path, dest_path)
         print(f"DEBUG: File stored at {dest_path}")
         return dest_path
-
-    async def add_file(self, file_path: Path) -> Document:
-        """Add a file to the document store with content caching."""
-        print(f"DEBUG: Adding file: {file_path}")
-        if not file_path.exists():
-            print(f"DEBUG: File not found: {file_path}")
-            raise FileNotFoundError(f"File not found: {file_path}")
-        
-        try:
-            content = file_path.read_bytes()
-            file_hash = self._compute_hash(content)
-            print(f"DEBUG: File hash: {file_hash}")
-            
-            with sqlite3.connect(self.db_path) as conn:
-                c = conn.cursor()
-                c.execute("SELECT id FROM documents WHERE hash = ?", (file_hash,))
-                if c.fetchone():
-                    print(f"DEBUG: File already exists in store")
-                    raise ValueError(f"File already exists in store: {file_path}")
-                
-                local_path = self._store_local_file(file_path)
-                print(f"DEBUG: Stored local file at: {local_path}")
-                
-                # Extract content
-                extractor = next(
-                    (ext for ext in self.extractors if ext.supports(str(file_path))),
-                    None
-                )
-                
-                if not extractor:
-                    raise ValueError(f"No suitable extractor found for {file_path}")
-                
-                metadata = {}
-                print(f"DEBUG: Extracting content using {extractor.__class__.__name__}")
-                content = await extractor.extract(str(file_path), metadata)
-                
-                if content is None:
-                    raise ValueError(f"Failed to extract content from {file_path}")
-                
-                print(f"DEBUG: Content extracted successfully")
-                
-                now = datetime.datetime.now()
-                content_hash = self._compute_hash(content)
-                
-                # Insert document
-                c.execute("""
-                    INSERT INTO documents 
-                    (source, doc_type, hash, local_path, content, content_hash,
-                     content_date, added_date, last_accessed, extracted_text, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    str(file_path),
-                    'file',
-                    file_hash,
-                    str(local_path),
-                    content,
-                    content_hash,
-                    now.isoformat(),
-                    now.isoformat(),
-                    now.isoformat(),
-                    content,
-                    json.dumps(metadata)
-                ))
-                
-                doc_id = c.lastrowid
-                print(f"DEBUG: Document inserted with ID: {doc_id}")
-                
-                doc = Document(
-                    id=doc_id,
-                    source=str(file_path),
-                    doc_type='file',
-                    hash=file_hash,
-                    local_path=str(local_path),
-                    content=content,
-                    content_hash=content_hash,
-                    content_date=now,
-                    added_date=now,
-                    last_accessed=now,
-                    extracted_text=content,
-                    metadata=metadata
-                )
-                
-                conn.commit()
-                return doc
-                
-        except Exception as e:
-            print(f"DEBUG: Error adding file: {type(e).__name__}: {str(e)}")
-            raise
 
     async def add_url(self, url: str) -> Document:
         """Add a URL to the document store with content caching."""

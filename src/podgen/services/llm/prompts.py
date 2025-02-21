@@ -1,6 +1,9 @@
-from typing import List
-from podgen.models.conversation_style import ConversationStyle, SpeakerPersonality
-from podgen.models.conversation_config import ConversationConfig
+"""Prompt building and management for LLM services."""
+
+import json
+from typing import List, Dict, Any
+from ...models.conversation_style import ConversationStyle, SpeakerPersonality
+from ...models.conversation_config import ConversationConfig
 
 SYSTEM_PROMPTS = {
     "content_analysis": """You are an expert content analyzer. Extract key information and insights from documents.
@@ -67,6 +70,7 @@ Format your response as a JSON object with a "dialogue" array. Each item in the 
         # Calculate target metrics
         target_words = target_duration * 150  # 150 words per minute
         min_turns = max(10, target_duration * 2)  # At least 2 turns per minute
+        words_per_turn = target_words // min_turns
         
         # Format key points
         points_text = []
@@ -76,50 +80,72 @@ Format your response as a JSON object with a "dialogue" array. Each item in the 
                 point_text += f"\n  Details: {point['details']}"
             points_text.append(point_text)
         
-        # Format speakers
-        speakers_text = [f"- {s.name}: {s.style}" for s in speakers]
+        # Format speakers with more detailed instructions
+        speakers_text = []
+        for s in speakers:
+            style_points = s.style.split(",") if "," in s.style else [s.style]
+            style_bullets = "\n    - " + "\n    - ".join(style_points)
+            speakers_text.append(f"- {s.name}:{style_bullets}")
         
-        return f'''Create a detailed {style} conversation for a {target_duration}-minute podcast segment.
+        # Build example turns
+        example_turns = []
+        for s in speakers:
+            example_turns.append({
+                "speaker": s.name,
+                "content": f"As we explore {topics[0]}, I want to emphasize several crucial points. First, we need to consider the implications carefully. This requires thoughtful analysis and detailed discussion, especially when we look at {key_points[0].get('point', 'our main topic')}. Let me explain why this matters..."
+            })
 
-CONVERSATION REQUIREMENTS:
-1. Length: Approximately {target_words} words total ({target_duration} minutes)
-2. Speaking Turns: At least {min_turns} distinct turns
-3. Depth: Each turn should be 40-60 words for natural flow
-4. Style: {style} tone throughout
+        example_json = json.dumps({"dialogue": example_turns}, indent=2)
+        
+        return f"""Generate a detailed {style} conversation for a {target_duration}-minute podcast segment. This is a professional podcast requiring substantial, in-depth discussion.
 
-CONTENT STRUCTURE:
-The conversation must cover these topics and points:
-Topics: {", ".join(topics)}
+STRICT LENGTH REQUIREMENTS:
+1. Total Length: {target_words} words ({target_duration} minutes)
+2. Minimum Turns: {min_turns} speaking turns
+3. Turn Length: EACH turn MUST be {words_per_turn-20}-{words_per_turn+20} words
+   - No short responses or brief acknowledgments
+   - Each turn must contribute substantial content
+   - Include specific details and examples
+   - Develop ideas fully within each turn
 
-Key Points:
+CONTENT REQUIREMENTS:
+Main Topics: {', '.join(topics)}
+
+Key Points to Cover:
 {chr(10).join(points_text)}
 
-SPEAKER ROLES & INTERACTION:
+SPEAKER PROFILES AND STYLES:
 {chr(10).join(speakers_text)}
 
-REQUIRED ELEMENTS:
-Introduction (15% of time):
-- Warm welcome and topic introduction
-- Speaker introductions with expertise context
-- Overview of what will be discussed
+CONVERSATION STRUCTURE:
+1. Opening Segment (15%):
+   - Thorough welcome and context setting
+   - Detailed speaker introductions
+   - Clear agenda for the discussion
 
-Main Discussion (70% of time):
-- Thorough exploration of each key point
-- Real examples and specific details
-- Natural transitions between topics
-- Interactive discussion and follow-up questions
+2. Main Discussion (70%):
+   - Deep exploration of each key point
+   - Real-world examples and applications
+   - Detailed analysis and insights
+   - Natural but substantial transitions
+   - Build on previous points
+   - Each speaker must demonstrate expertise
 
-Conclusion (15% of time):
-- Summary of key insights
-- Final thoughts from each speaker
-- Clear wrap-up
+3. Closing Segment (15%):
+   - Comprehensive summary
+   - Key takeaways from each speaker
+   - Forward-looking conclusions
 
-Format the response as JSON:
-{
-  "dialogue": [
-    {"speaker": "SpeakerName", "content": "Natural conversation content"}
-  ]
-}
+IMPORTANT DIALOGUE RULES:
+1. NO brief exchanges or short responses
+2. Each turn must be self-contained and substantial
+3. Maintain natural conversation flow while being detailed
+4. Include specific examples and evidence
+5. Connect points across the conversation
+6. Stay focused on the topics
+7. Demonstrate speaker expertise
 
-Note: Each turn should be substantial and meaningful, avoiding brief exchanges.'''
-    
+FORMAT YOUR RESPONSE EXACTLY LIKE THIS EXAMPLE:
+{example_json}
+
+Each turn MUST follow these length and format requirements. Responses that are too short or lack substance will be rejected."""

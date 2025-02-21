@@ -61,45 +61,79 @@ class ContentAnalyzer:
 
         try:
             # Create a focused analysis prompt
-            analysis_prompt = f"""Analyze this document and extract key information for a podcast discussion.
-        
-DOCUMENT CONTENT:
-{all_content[0][:3000]}  # Using first 3000 chars
+            analysis_prompt = f"""Analyze this content for a podcast discussion. Return a JSON object with specific information structured exactly as shown below.
 
-Provide a structured analysis in this JSON format:
+CONTENT TO ANALYZE:
+{all_content[0][:3000]}
+
+REQUIRED JSON STRUCTURE:
 {{
-    "main_topics": ["List 3-5 main topics from the document"],
+    "main_topics": [
+        "First main topic",
+        "Second main topic",
+        "Third main topic"
+    ],
     "key_points": [
-        {{"point": "Specific information from the document", 
-         "context": "Direct quote or context",
-         "importance": "Why this is significant"}}
+        {{
+            "point": "First specific point from the content",
+            "context": "Direct relevant quote or context",
+            "importance": "Clear explanation of why this matters"
+        }},
+        {{
+            "point": "Second specific point",
+            "context": "Supporting quote or context",
+            "importance": "Why this is significant"
+        }}
     ],
     "technical_details": [
-        {{"term": "Technical term from document",
-         "explanation": "Clear explanation"}}
+        {{
+            "term": "Technical term or concept",
+            "explanation": "Clear, conversational explanation"
+        }}
     ],
     "suggested_structure": [
-        {{"segment": "segment_name",
-         "topics": ["Specific topics to cover"],
-         "key_details": ["Important details to mention"]}}
+        {{
+            "segment": "Opening",
+            "topics": ["Topic 1", "Topic 2"],
+            "key_details": ["Important detail 1", "Important detail 2"]
+        }},
+        {{
+            "segment": "Main Discussion",
+            "topics": ["Topic 3", "Topic 4"],
+            "key_details": ["Detail 3", "Detail 4"]
+        }}
     ],
     "interesting_elements": [
-        {{"element": "Interesting item from document",
-         "discussion_angle": "How to present this in conversation"}}
+        {{
+            "element": "Interesting fact or concept",
+            "discussion_angle": "How to present this in conversation"
+        }}
     ]
 }}
 
-Ensure all information comes directly from the document content."""
+IMPORTANT RULES:
+1. Use ONLY information from the provided content
+2. Include at least 3 main topics
+3. Include at least 3 key points
+4. Format exactly as shown above
+5. Do not add any text outside the JSON
+6. Ensure all JSON is valid and properly nested"""
 
             # Get analysis from LLM
             analysis = await self.llm.generate_json(
                 prompt=analysis_prompt,
-                system_prompt="You are an expert content analyzer. Extract specific, concrete information directly from the provided document. Do not make up or generalize content."
+                system_prompt="You are an expert content analyzer specializing in creating podcast discussion outlines. Generate only valid JSON data following the exact structure requested."
             )
 
             # Validate we got meaningful content
-            if not analysis or not isinstance(analysis.get('main_topics'), list) or not analysis.get('key_points'):
-                raise ValueError("Analysis did not produce required content structure")
+            if not analysis:
+                raise ValueError("No analysis produced")
+            
+            if not isinstance(analysis.get('main_topics'), list) or len(analysis.get('main_topics', [])) < 3:
+                raise ValueError("Analysis missing required main topics")
+                
+            if not isinstance(analysis.get('key_points'), list) or len(analysis.get('key_points', [])) < 3:
+                raise ValueError("Analysis missing required key points")
 
             # Add document info
             analysis['document_info'] = [{

@@ -1,5 +1,6 @@
 """Configuration management for podgen."""
 
+import os
 from pathlib import Path
 from typing import Optional, Union
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -26,9 +27,45 @@ class TTSProvider(str, Enum):
     OLLAMA = "ollama"
     SYSTEM = "system"
 
+# Get default podgen directory
+DEFAULT_PODGEN_DIR = os.getenv('PODGEN_DIR', str(Path.home() / '.podgen'))
+
 class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
     
+    # Base directory
+    podgen_dir: Path = Field(DEFAULT_PODGEN_DIR, env="PODGEN_DIR")
+    
+    # Paths derived from base directory
+    output_dir: Path = Field(None, env="OUTPUT_DIR")
+    cache_dir: Path = Field(None, env="CACHE_DIR")
+    data_dir: Path = Field(None, env="DATA_DIR")
+    models_dir: Path = Field(None, env="MODELS_DIR")
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # Set up derived paths if not explicitly configured
+        if self.output_dir is None:
+            self.output_dir = self.podgen_dir / "output"
+        if self.cache_dir is None:
+            self.cache_dir = self.podgen_dir / "cache"
+        if self.data_dir is None:
+            self.data_dir = self.podgen_dir / "data"
+        if self.models_dir is None:
+            self.models_dir = self.podgen_dir / "models"
+    
+    @field_validator("podgen_dir", "output_dir", "cache_dir", "data_dir", "models_dir")
+    def create_directory(cls, v: Path) -> Path:
+        """Ensure directories exist."""
+        v.mkdir(parents=True, exist_ok=True)
+        return v
+       
     # API Settings
     openai_api_key: str = Field("", env="OPENAI_API_KEY")
     elevenlabs_api_key: str = Field("", env="ELEVENLABS_API_KEY")
@@ -51,40 +88,15 @@ class Settings(BaseSettings):
     crossfade_duration: float = Field(0.5, env="CROSSFADE_DURATION")
     output_format: str = Field("wav", env="OUTPUT_FORMAT")
     
-    # Paths
-    output_dir: Path = Field(Path("output"), env="OUTPUT_DIR")
-    cache_dir: Path = Field(Path(".cache"), env="CACHE_DIR")
-    data_dir: Path = Field(Path("data"), env="DATA_DIR")
-    models_dir: Path = Field(Path("models"), env="MODELS_DIR")
-    
     # Device Settings
     device: str = Field(DEFAULT_DEVICE, env="DEVICE")
     
     # Logging
     log_level: str = Field("INFO", env="LOG_LEVEL")
     log_file: Optional[Path] = Field(None, env="LOG_FILE")
-    
-    model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        extra="ignore"  # Allow extra fields in .env file
-    )
-    
-    @field_validator("output_dir", "cache_dir", "data_dir", "models_dir")
-    def create_directory(cls, v: Path) -> Path:
-        """Ensure directories exist."""
-        v.mkdir(parents=True, exist_ok=True)
-        return v
-
+        
 # Create global settings instance
 settings = Settings()
-
-def init_directories() -> None:
-    """Initialize required directories."""
-    settings.output_dir.mkdir(exist_ok=True)
-    settings.cache_dir.mkdir(exist_ok=True)
-    settings.data_dir.mkdir(exist_ok=True)
-    settings.models_dir.mkdir(exist_ok=True)
 
 def get_llm_service():
     """Create LLM service based on configuration."""

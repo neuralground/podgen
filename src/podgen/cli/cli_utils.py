@@ -145,24 +145,31 @@ def setup_completion() -> None:
     """Set up completion for the CLI."""
     import readline
     
-    print("DEBUG: Setting up completion...")  # Debug print
+    # Define the prompt display function
+    def refresh_prompt(prompt):
+        readline.redisplay()
+    
+    # Set up proper line editing
+    readline.parse_and_bind('set editing-mode emacs')
+    readline.parse_and_bind('set show-all-if-ambiguous on')
+    readline.parse_and_bind('set completion-ignore-case on')
+    readline.parse_and_bind('set mark-directories on')
+    readline.parse_and_bind('set mark-symlinked-directories on')
     
     # Set completer function
     readline.set_completer(get_completion)
     
-    # Set completer delimiters to just basic whitespace
+    # Set completer delimiters
     readline.set_completer_delims(' \t\n')
     
-    # Try both completion configurations
+    # Set the pre-input hook to handle prompt redisplay
+    readline.set_pre_input_hook(lambda: refresh_prompt("podgen> "))
+    
+    # Configure based on readline implementation
     if 'libedit' in readline.__doc__:
-        print("DEBUG: Using libedit configuration")  # Debug print
         readline.parse_and_bind('bind ^I rl_complete')
-        readline.parse_and_bind('bind ^I complete')
     else:
-        print("DEBUG: Using standard readline configuration")  # Debug print
         readline.parse_and_bind('tab: complete')
-        
-    print(f"DEBUG: Completion setup complete. Delimiters: {readline.get_completer_delims()}")  # Debug print
 
 # Initialize completion on import
 setup_completion()
