@@ -517,9 +517,9 @@ async def play_conversation(
         return
     
     try:
-        # Create and use audio player
+        # Create and use audio player with title
         player = AudioPlayer(console)
-        await player.play(conversation.audio_path)
+        await player.play(conversation.audio_path, title=conversation.title)
             
     except Exception as e:
         console.print(f"[red]Failed to play audio: {e}")
