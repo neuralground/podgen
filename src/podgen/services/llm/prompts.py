@@ -62,15 +62,15 @@ Format your response as a JSON object with a "dialogue" array. Each item in the 
     def build_dialogue_prompt(
         style: str,
         target_duration: int,
+        target_words: int,
+        optimal_turns: int,
         speakers: List[SpeakerPersonality],
         topics: List[str],
-        key_points: List[dict]
+        key_points: List[dict],
+        attempt: int,
+        max_attempts: int
     ) -> str:
-        """Build the dialogue generation prompt."""
-        # Calculate target metrics
-        target_words = target_duration * 150  # 150 words per minute
-        min_turns = max(10, target_duration * 2)  # At least 2 turns per minute
-        words_per_turn = target_words // min_turns
+        """Build the dialogue generation prompt with stronger length emphasis."""
         
         # Format key points
         points_text = []
@@ -87,65 +87,102 @@ Format your response as a JSON object with a "dialogue" array. Each item in the 
             style_bullets = "\n    - " + "\n    - ".join(style_points)
             speakers_text.append(f"- {s.name}:{style_bullets}")
         
-        # Build example turns
+        # Build example turns with substantial content
         example_turns = []
+        
+        # Safe access to topics and key points
+        default_topic = "the main topic"
+        default_point = {"point": "the key aspects", "details": "important considerations"}
+        
+        topic_to_use = topics[0] if topics else default_topic
+        point_to_use = key_points[0] if key_points else default_point
+        
         for s in speakers:
             example_turns.append({
                 "speaker": s.name,
-                "content": f"As we explore {topics[0]}, I want to emphasize several crucial points. First, we need to consider the implications carefully. This requires thoughtful analysis and detailed discussion, especially when we look at {key_points[0].get('point', 'our main topic')}. Let me explain why this matters..."
+                "content": f"As we delve into {topic_to_use}, I want to emphasize several crucial aspects that deserve our attention. First, when we consider {point_to_use.get('point', 'the key aspects')}, we need to recognize its broader implications. This isn't just about surface-level understanding - we need to examine how these elements interact and influence real-world outcomes. Let me provide a concrete example that illustrates this point clearly..."
             })
 
         example_json = json.dumps({"dialogue": example_turns}, indent=2)
         
-        return f"""Generate a detailed {style} conversation for a {target_duration}-minute podcast segment. This is a professional podcast requiring substantial, in-depth discussion.
+        # Ensure we have valid topics
+        safe_topics = topics if topics else ["Content Overview", "Key Points", "Practical Applications"]
+        
+        # Format key points safely
+        safe_points = []
+        if key_points:
+            for point in key_points:
+                if isinstance(point, dict):
+                    point_text = f"- {point.get('point', '')}"
+                    if point.get('details'):
+                        point_text += f"\n  Details: {point['details']}"
+                    safe_points.append(point_text)
+        
+        if not safe_points:
+            safe_points = [
+                "- Understand the main concepts\n  Details: Focus on core ideas",
+                "- Examine practical applications\n  Details: Real-world examples",
+                "- Consider implications\n  Details: Broader context"
+            ]
+        
+        # Build comprehensive prompt
+        
+        # Build comprehensive prompt
+        return f"""Generate an engaging {style} podcast conversation that will take approximately {target_duration} minutes to read aloud.
 
-STRICT LENGTH REQUIREMENTS:
-1. Total Length: {target_words} words ({target_duration} minutes)
-2. Minimum Turns: {min_turns} speaking turns
-3. Turn Length: EACH turn MUST be {words_per_turn-20}-{words_per_turn+20} words
-   - No short responses or brief acknowledgments
-   - Each turn must contribute substantial content
-   - Include specific details and examples
-   - Develop ideas fully within each turn
+LENGTH REQUIREMENTS (STRICT):
+- Target Word Count: {target_words} words (this is critical)
+- This translates to roughly {target_duration} minutes of spoken content
+- Required number of substantial speaking turns: {optimal_turns}
+- Each turn MUST be 75-150 words minimum
+- Previous attempts were too short - this is attempt {attempt} of {max_attempts}
+- Short responses or brief acknowledgments will be rejected
 
-CONTENT REQUIREMENTS:
+CONTENT FOCUS:
 Main Topics: {', '.join(topics)}
 
 Key Points to Cover:
 {chr(10).join(points_text)}
 
-SPEAKER PROFILES AND STYLES:
+SPEAKER REQUIREMENTS:
 {chr(10).join(speakers_text)}
 
-CONVERSATION STRUCTURE:
-1. Opening Segment (15%):
-   - Thorough welcome and context setting
-   - Detailed speaker introductions
-   - Clear agenda for the discussion
+DIALOGUE STRUCTURE:
+1. Opening (15% of total length):
+   - Thorough introductions of speakers and topics
+   - Clear establishment of context and goals
+   - Initial framing of key discussion points
+   - Must be at least {int(target_words * 0.15)} words combined
 
-2. Main Discussion (70%):
-   - Deep exploration of each key point
-   - Real-world examples and applications
-   - Detailed analysis and insights
-   - Natural but substantial transitions
-   - Build on previous points
-   - Each speaker must demonstrate expertise
+2. Main Discussion (70% of total length):
+   - Deep exploration of each major point
+   - Detailed examples and real-world applications
+   - Substantive back-and-forth between speakers
+   - Build complexity through the discussion
+   - Must be at least {int(target_words * 0.7)} words combined
 
-3. Closing Segment (15%):
-   - Comprehensive summary
-   - Key takeaways from each speaker
-   - Forward-looking conclusions
+3. Conclusion (15% of total length):
+   - Comprehensive wrap-up of key points
+   - Synthesis of main insights
+   - Forward-looking implications
+   - Must be at least {int(target_words * 0.15)} words combined
 
-IMPORTANT DIALOGUE RULES:
-1. NO brief exchanges or short responses
-2. Each turn must be self-contained and substantial
-3. Maintain natural conversation flow while being detailed
-4. Include specific examples and evidence
-5. Connect points across the conversation
-6. Stay focused on the topics
-7. Demonstrate speaker expertise
+CRITICAL RULES:
+1. ABSOLUTELY NO brief exchanges or single-sentence responses
+2. Each speaking turn must be self-contained and substantial
+3. Include specific examples, data, or evidence in each turn
+4. Maintain natural flow while ensuring detailed content
+5. Show speaker expertise through depth of responses
+6. Connect ideas across the conversation
+7. Build complexity as the discussion progresses
 
-FORMAT YOUR RESPONSE EXACTLY LIKE THIS EXAMPLE:
+Format response as valid JSON with:
 {example_json}
 
-Each turn MUST follow these length and format requirements. Responses that are too short or lack substance will be rejected."""
+LENGTH VALIDATION:
+- Target: {target_words} words total
+- Minimum turns: {optimal_turns}
+- Minimum words per turn: 75
+- Previous attempts were too short (attempt {attempt}/{max_attempts})
+- Responses not meeting length requirements will be rejected
+"""

@@ -59,46 +59,60 @@ class ConversationGenerator:
         # Get speakers based on roles
         speakers = [DEFAULT_SPEAKER_PROFILES[role] for role in speaker_roles]
         
-        # Calculate target metrics
+        # Calculate target metrics based on duration
         target_words = target_duration * 150  # 150 words per minute
-        min_turns = max(10, target_duration * 2)  # At least 2 turns per minute
-        min_words_per_turn = 40  # Minimum words per speaking turn
-        max_retries = 3  # Maximum number of regeneration attempts
+        min_words_per_turn = 75  # Increased minimum words per turn
+        optimal_turns = max(int(target_words / min_words_per_turn), 10)
         
         try:
             # Extract content from analysis
             topics = analysis.get('main_topics', ['General Discussion'])
             key_points = analysis.get('key_points', [])
             
-            # Generate with improved retry logic
-            remaining_retries = max_retries
-            current_temperature = 0.7  # Start with default temperature
+            # Start with shorter target for first attempt
+            initial_target = max(target_words * 0.8, 500)  # Start with 80% of target
+            current_target = initial_target
+            max_attempts = 5  # Increased from 3 to 5 attempts
+            current_temperature = 0.7
             
-            while remaining_retries > 0:
+            for attempt in range(max_attempts):
                 try:
-                    # Adjust temperature based on remaining retries
-                    if remaining_retries < max_retries:
-                        current_temperature = min(0.9, current_temperature + 0.1)
+                    logger.info(f"Dialogue generation attempt {attempt + 1}")
+                    logger.info(f"Target words: {int(current_target)}")
+                    
+                    # Adjust temperature based on remaining attempts
+                    if attempt > 0:
+                        current_temperature = min(0.9, current_temperature + 0.05)
+                    
+                    # Generate with updated word target
+                    config_with_target = {
+                        **config,
+                        'target_words': int(current_target),
+                        'attempt': attempt + 1,
+                        'max_attempts': max_attempts
+                    }
                     
                     # Generate dialogue using prompt builder
                     prompt = PromptBuilder.build_dialogue_prompt(
                         style=style,
                         target_duration=target_duration,
+                        target_words=int(current_target),
+                        optimal_turns=optimal_turns,
                         speakers=speakers,
                         topics=topics,
-                        key_points=key_points
+                        key_points=key_points,
+                        attempt=attempt + 1,
+                        max_attempts=max_attempts
                     )
                     
                     dialogue_turns = await self.llm.generate_dialogue(
                         prompt=prompt,
-                        system_prompt="Generate a natural, detailed conversation in valid JSON format. Each turn should be substantial.",
+                        system_prompt="Generate natural, detailed conversation in valid JSON format. Each turn must be substantial.",
                         temperature=current_temperature
                     )
                     
-                    # Validate response
                     if not dialogue_turns:
-                        logger.warning(f"Attempt {max_retries - remaining_retries + 1}: No dialogue generated")
-                        remaining_retries -= 1
+                        logger.warning(f"Attempt {attempt + 1}: No dialogue generated")
                         continue
                     
                     # Process turns with validation
@@ -106,60 +120,95 @@ class ConversationGenerator:
                     total_words = 0
                     used_speakers = set()
                     
+                    # Adjust validation thresholds based on model
+                    is_o1_model = hasattr(self.llm, 'model') and str(self.llm.model).startswith('o1')
+                    min_words_per_turn = 30 if is_o1_model else 75  # Even more lenient for o1
+                    min_turn_ratio = 0.5 if is_o1_model else 0.8    # More lenient completion threshold
+                    max_sequential_same_speaker = 2                  # Prevent monologues
+                    
+                    current_speaker = None
+                    same_speaker_count = 0
+                    
                     for turn in dialogue_turns:
                         if not isinstance(turn, dict) or 'speaker' not in turn or 'content' not in turn:
+                            logger.warning("Invalid turn format")
                             continue
                         
-                        # Find matching speaker with fuzzy matching
-                        speaker = next(
-                            (s for s in speakers if turn['speaker'].lower() in s.name.lower()),
-                            None
-                        )
+                        # Try flexible speaker matching
+                        speaker_name = turn['speaker'].strip().lower()
+                        speaker = None
+                        for s in speakers:
+                            if s.name.lower() in speaker_name or speaker_name in s.name.lower():
+                                speaker = s
+                                break
+                        
                         if not speaker:
+                            logger.warning(f"Could not match speaker: {turn['speaker']}")
                             continue
+                        
+                        # Check for too many sequential turns by same speaker
+                        if speaker == current_speaker:
+                            same_speaker_count += 1
+                            if same_speaker_count > max_sequential_same_speaker:
+                                logger.warning("Too many sequential turns by same speaker")
+                                continue
+                        else:
+                            same_speaker_count = 1
+                            current_speaker = speaker
                         
                         content = turn['content'].strip()
                         word_count = len(content.split())
                         
-                        # Try to expand short turns if needed
-                        if word_count < min_words_per_turn and word_count >= 15:
-                            if any(point['point'] in content for point in key_points):
-                                content += f" This connects directly to our discussion about {random.choice(topics)}."
-                            word_count = len(content.split())
+                        # Allow shorter turns if they're substantive
+                        if word_count < min_words_per_turn:
+                            # Check if content seems substantive despite length
+                            sentences = content.split('.')
+                            if len(sentences) >= 2 and word_count >= min_words_per_turn * 0.7:
+                                logger.info(f"Accepting shorter but substantive turn: {word_count} words")
+                            else:
+                                logger.warning(f"Turn too short: {word_count} words")
+                                continue
                         
-                        if word_count >= min_words_per_turn:
-                            used_speakers.add(speaker.name)
-                            turns.append(DialogueTurn(speaker=speaker, content=content))
-                            total_words += word_count
+                        used_speakers.add(speaker.name)
+                        turns.append(DialogueTurn(speaker=speaker, content=content))
+                        total_words += word_count
+                        
+                        logger.info(f"Added turn: {speaker.name}, {word_count} words")
                     
-                    # Validate metrics
-                    if (len(turns) >= min_turns and 
-                        total_words >= target_words * 0.8 and  # Allow 20% below target
+                    # Log validation metrics
+                    logger.info(f"Generated turns: {len(turns)}")
+                    logger.info(f"Total words: {total_words}")
+                    logger.info(f"Target words: {target_words}")
+                    logger.info(f"Speakers used: {len(used_speakers)}/{len(speakers)}")
+                    
+                    # Check if we've met our requirements
+                    if (len(turns) >= optimal_turns * min_turn_ratio and
+                        total_words >= target_words * min_turn_ratio and
                         len(used_speakers) == len(speakers)):
                         logger.info(f"Generated valid conversation: {len(turns)} turns, {total_words} words")
                         return Dialogue(turns=turns)
-                    
-                    logger.warning(
-                        f"Attempt {max_retries - remaining_retries + 1}: Generated conversation too short "
-                        f"({len(turns)} turns, {total_words} words, {len(used_speakers)}/{len(speakers)} speakers)"
-                    )
-                    
-                    # Enhance prompt for retry
-                    if remaining_retries > 1:
-                        prompt += (
-                            f"\n\nIMPORTANT: Need more detailed responses. "
-                            f"Target metrics: {target_words} words, {min_turns} turns minimum. "
-                            f"Each turn should be substantial."
+                    else:
+                        logger.warning(
+                            f"Generated conversation too short or incomplete:\n"
+                            f"Turns: {len(turns)} vs required {optimal_turns * min_turn_ratio}\n"
+                            f"Words: {total_words} vs required {target_words * min_turn_ratio}\n"
+                            f"Speakers: {len(used_speakers)} vs required {len(speakers)}"
                         )
+
+                    # Increase target for next attempt
+                    current_target = min(current_target * 1.25, target_words * 1.2)
                     
-                    remaining_retries -= 1
+                    # Last attempt - try with maximum target
+                    if attempt == max_attempts - 2:
+                        current_target = target_words * 1.2
                     
                 except Exception as e:
                     logger.error(f"Error during generation attempt: {e}")
-                    remaining_retries -= 1
+                    if attempt == max_attempts - 1:
+                        raise
                     continue
             
-            raise ValueError(f"Failed to generate valid conversation after {max_retries} attempts")
+            raise ValueError(f"Failed to generate valid conversation after {max_attempts} attempts")
             
         except Exception as e:
             logger.error(f"Dialogue generation failed: {e}")

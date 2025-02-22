@@ -106,17 +106,28 @@ class PodcastGenerator:
             report_progress('conversation', 0.0, 0.3)
             
             try:
-                # Add additional metadata to config
+                # Add comprehensive metadata to config
                 if not config:
                     config = {}
+                
+                # LLM configuration
                 config.update({
                     'document_ids': doc_ids,
                     'llm_provider': analysis['llm_provider'],
                     'llm_model': analysis['llm_model'],
+                    'llm_temperature': getattr(self.analyzer.llm, 'temperature', 0.7),
+                    'llm_max_tokens': getattr(self.analyzer.llm, 'max_tokens', 2000),
+                    
+                    # TTS configuration
                     'tts_provider': str(type(self.tts).__name__),
-                    'tts_model': getattr(self.tts, 'model_name', None)
+                    'tts_model': getattr(self.tts, 'model_name', None),
+                    'sample_rate': getattr(self.tts, 'sample_rate', 44100),
+                    'output_format': getattr(self.tts, 'format', 'wav'),
+                    
+                    # Generation settings
+                    'device': getattr(self.tts, 'device', 'cpu'),
                 })
-                
+
                 dialogue = await self.conversation.generate_dialogue(
                     analysis,
                     config

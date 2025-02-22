@@ -543,51 +543,110 @@ def show_conversation(
     if conversation.status == ConversationStatus.FAILED:
         console.print(f"[red]This conversation failed to generate: {conversation.error}")
         return
-    
+
     # Display podcast metadata
-    console.print("\n[bold blue]Podcast Details:[/bold blue]")
+    console.print("\nPodcast Details")
+    console.print("==============")
     console.print(f"Title: {conversation.title}")
     console.print(f"Created: {conversation.created_date.strftime('%Y-%m-%d %H:%M')}")
-    console.print(f"Status: [green]{conversation.status.value}[/green]")
+    console.print(f"Status: {conversation.status.value}")
     
     # Get conversation style and speakers
     metadata = conversation.metadata
     style = metadata.get('style', 'Not specified')
-    console.print(f"\nConversation Style: {style}")
+    console.print(f"\nConversation Format")
+    console.print("==================")
+    console.print(f"Style: {style}")
     
     # Display speakers and their roles
     speaker_roles = metadata.get('speaker_roles', [])
     if speaker_roles:
-        console.print("\n[bold]Speakers:[/bold]")
+        console.print("\nSpeakers")
+        console.print("========")
         for role in speaker_roles:
             speaker = DEFAULT_SPEAKER_PROFILES.get(role)
             if speaker:
-                console.print(f"- {speaker.name}: {speaker.style}")
+                console.print(f"{speaker.name}")
+                console.print(f"Role: {role}")
+                console.print(f"Style: {speaker.style}")
+                if speaker.expertise:
+                    console.print(f"Expertise: {', '.join(speaker.expertise)}")
+                console.print()
     
-    # Display source documents
+    # Display source documents with summaries
     doc_ids = metadata.get('document_ids', [])
     if doc_ids:
-        console.print("\n[bold]Source Documents:[/bold]")
+        console.print("\nSource Documents")
+        console.print("===============")
         for doc_id in doc_ids:
             doc = doc_store.get_document(doc_id)
             if doc:
-                console.print(f"- {doc.title} ({doc.doc_type})")
-                if doc.metadata.get('url'):
-                    console.print(f"  URL: {doc.metadata['url']}")
+                # Show source info
+                if doc.doc_type == 'file':
+                    title = Path(doc.source).name
+                    console.print(f"\nFile: {title}")
+                    console.print(f"Path: {doc.source}")
+                else:  # URL
+                    console.print(f"\nURL: {doc.source}")
+                    access_date = doc.metadata.get('access_date', doc.added_date.strftime('%Y-%m-%d %H:%M'))
+                    console.print(f"Accessed: {access_date}")
+                    if doc.metadata.get('title'):
+                        console.print(f"Page Title: {doc.metadata['title']}")
+                
+                # Show metadata
+                if doc.metadata.get('author'):
+                    console.print(f"Author: {doc.metadata['author']}")
+                if doc.metadata.get('date'):
+                    console.print(f"Date: {doc.metadata['date']}")
+                if doc.metadata.get('description'):
+                    console.print(f"\nDescription: {doc.metadata['description']}")
+                
+                # Show content preview
+                if doc.extracted_text:
+                    preview = doc.extracted_text[:300].replace('\n', ' ').strip()
+                    if len(preview) == 300:
+                        preview += "..."
+                    console.print(f"\nPreview: {preview}")
     
     # Display model information
-    console.print("\n[bold]Model Information:[/bold]")
+    console.print("\nModel Information")
+    console.print("================")
+    
+    # LLM Configuration
     llm_provider = metadata.get('llm_provider', 'Not specified')
     llm_model = metadata.get('llm_model', 'Not specified')
+    llm_temperature = metadata.get('llm_temperature', 'Not specified')
+    llm_tokens = metadata.get('llm_max_tokens', 'Not specified')
+    
+    console.print("\nContent Analysis & Dialogue")
+    console.print(f"Provider: {llm_provider}")
+    console.print(f"Model: {llm_model}")
+    console.print(f"Temperature: {llm_temperature}")
+    console.print(f"Max Tokens: {llm_tokens}")
+    
+    # TTS Configuration
     tts_provider = metadata.get('tts_provider', 'Not specified')
     tts_model = metadata.get('tts_model', 'Not specified')
+    tts_sample_rate = metadata.get('sample_rate', 'Not specified')
+    tts_format = metadata.get('output_format', 'Not specified')
     
-    console.print(f"Content Analysis & Dialogue: {llm_provider} ({llm_model})")
-    console.print(f"Text-to-Speech: {tts_provider}" + (f" ({tts_model})" if tts_model != 'Not specified' else ""))
+    console.print("\nText-to-Speech")
+    console.print(f"Provider: {tts_provider}")
+    if tts_model != 'Not specified':
+        console.print(f"Model: {tts_model}")
+    console.print(f"Sample Rate: {tts_sample_rate} Hz")
+    console.print(f"Output Format: {tts_format}")
+    
+    # Generation Settings
+    device = metadata.get('device', 'Not specified')
+    console.print("\nGeneration Settings")
+    console.print(f"Device: {device}")
     
     # Display audio information if available
     if conversation.audio_path:
-        console.print(f"\nAudio File: {conversation.audio_path}")
+        console.print("\nOutput Files")
+        console.print("============")
+        console.print(f"Audio: {conversation.audio_path}")
         try:
             size = conversation.audio_path.stat().st_size
             if size > 1024*1024:
@@ -596,10 +655,10 @@ def show_conversation(
                 size = f"{size/1024:.1f}KB"
             else:
                 size = f"{size}B"
-            console.print(f"File Size: {size}")
+            console.print(f"Size: {size}")
         except:
             pass
-    
+
     # Display transcript
     if conversation.transcript:
         console.print("\n[bold]Transcript:[/bold]\n")
