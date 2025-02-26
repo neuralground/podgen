@@ -40,156 +40,89 @@ class ContentAnalyzer:
 
     async def analyze_documents(self, doc_ids: List[int]) -> Dict[str, Any]:
         """Analyze multiple documents using LLM for deep understanding."""
+        logger.info(f"Starting document analysis for {len(doc_ids)} documents")
         documents = []
         all_content = []
         
         # First, load all documents
         for doc_id in doc_ids:
-            doc = self.doc_store.get_document(doc_id)
-            if doc:
-                content = await self._load_document_content(doc)
-                if content:
-                    all_content.append(content)
-                    documents.append({
-                        'id': doc_id,
-                        'content': content,
-                        'metadata': doc.metadata
-                    })
+            try:
+                doc = self.doc_store.get_document(doc_id)
+                if doc:
+                    logger.info(f"Loading content for document {doc_id}")
+                    content = await self._load_document_content(doc)
+                    if content:
+                        logger.info(f"Loaded {len(content)} chars from document {doc_id}")
+                        all_content.append(content)
+                        documents.append({
+                            'id': doc_id,
+                            'content': content,
+                            'metadata': doc.metadata
+                        })
+                    else:
+                        logger.warning(f"No content extracted from document {doc_id}")
+            except Exception as e:
+                logger.error(f"Error loading document {doc_id}: {str(e)}")
 
         if not documents:
+            logger.error("No valid documents to analyze")
             raise ValueError("No valid documents to analyze")
 
         try:
-            # Check if using o1 model
-            is_o1_model = hasattr(self.llm, 'model') and str(self.llm.model).startswith('o1')
+            # Create a simplified analysis prompt for deepseek-r1
+            analysis_prompt = f"""Analyze this content and extract key information. Provide a clear, structured response following exactly this format:
+
+MAIN TOPICS:
+- Topic 1
+- Topic 2
+- Topic 3
+
+KEY POINTS:
+- Point 1: Supporting detail
+- Point 2: Supporting detail
+- Point 3: Supporting detail
+
+TECHNICAL TERMS:
+- Term 1: Definition
+- Term 2: Definition
+
+DISCUSSION STRUCTURE:
+1. Opening (Overview of topics)
+2. Main Discussion (Key points to cover)
+3. Conclusion (Summary and implications)
+
+Here is the content to analyze:
+
+{all_content[0][:3000]}"""
+
+            logger.info("Sending analysis prompt to LLM")
+            logger.debug(f"Prompt length: {len(analysis_prompt)}")
             
-            # Create a focused analysis prompt based on model
-            if is_o1_model:
-                # Simpler prompt for o1 models
-                analysis_prompt = f"""Analyze this content and create a structured analysis. Include these key elements:
-
-1. List exactly 3 main topics covered in the content
-2. For each topic, provide at least 2 key points with supporting details
-3. List any technical terms that need explanation
-4. Suggest a discussion structure with clear segments
-
-Content to analyze:
-{all_content[0][:2000]}
-
-Format your response exactly like this:
-
-Main Topics:
-1. [First topic]
-2. [Second topic]
-3. [Third topic]
-
-Key Points:
-- [First point from topic 1]: [Supporting detail]
-- [Second point from topic 1]: [Supporting detail]
-[Continue for other topics]
-
-Technical Terms:
-- [Term 1]: [Simple explanation]
-- [Term 2]: [Simple explanation]
-
-Discussion Structure:
-1. Opening
-- Cover [specific topics]
-- Focus on [key points]
-
-2. Main Discussion
-- Explore [specific topics]
-- Highlight [key points]
-
-3. Conclusion
-- Summarize [main points]
-- Connect [related elements]"""
-            else:
-                # Original JSON prompt for other models
-                analysis_prompt = f"""Analyze this content for a podcast discussion. Return a JSON object with specific information structured exactly as shown below.
-
-CONTENT TO ANALYZE:
-{all_content[0][:3000]}
-
-REQUIRED JSON STRUCTURE:
-{{
-    "main_topics": [
-        "First main topic",
-        "Second main topic",
-        "Third main topic"
-    ],
-    "key_points": [
-        {{
-            "point": "First specific point from the content",
-            "context": "Direct relevant quote or context",
-            "importance": "Clear explanation of why this matters"
-        }},
-        {{
-            "point": "Second specific point",
-            "context": "Supporting quote or context",
-            "importance": "Why this is significant"
-        }}
-    ],
-    "technical_details": [
-        {{
-            "term": "Technical term or concept",
-            "explanation": "Clear, conversational explanation"
-        }}
-    ],
-    "suggested_structure": [
-        {{
-            "segment": "Opening",
-            "topics": ["Topic 1", "Topic 2"],
-            "key_details": ["Important detail 1", "Important detail 2"]
-        }},
-        {{
-            "segment": "Main Discussion",
-            "topics": ["Topic 3", "Topic 4"],
-            "key_details": ["Detail 3", "Detail 4"]
-        }}
-    ]
-}}"""
-
-            # Get analysis from LLM
-            if is_o1_model:
-                # Handle text response for o1 models
-                response = await self.llm.generate_text(
-                    prompt=analysis_prompt,
-                    system_prompt="You are an expert content analyzer creating podcast outlines."
-                )
-                
-                # Parse the text response into our required structure
-                analysis = self._parse_text_analysis(response)
-            else:
-                # Use JSON response for other models
-                analysis = await self.llm.generate_json(
-                    prompt=analysis_prompt,
-                    system_prompt="You are an expert content analyzer specializing in creating podcast discussion outlines. Generate only valid JSON data following the exact structure requested."
-                )
-
-            # Validate and normalize the analysis
-            if not analysis:
-                raise ValueError("No analysis produced")
-                
-            # Ensure we have required fields with minimum content
-            if 'main_topics' not in analysis or not isinstance(analysis['main_topics'], list):
-                analysis['main_topics'] = self._extract_topics_from_content(all_content[0])
+            # Generate text response
+            response = await self.llm.generate_text(
+                prompt=analysis_prompt,
+                temperature=0.7
+            )
             
-            if len(analysis.get('main_topics', [])) < 3:
-                # Add generic topics if needed
-                generic_topics = ["Document Overview", "Key Concepts", "Practical Applications"]
-                analysis['main_topics'].extend(generic_topics[len(analysis['main_topics']):3])
+            if not response:
+                logger.error("Received empty response from LLM")
+                raise ValueError("Empty response from LLM")
                 
-            if 'key_points' not in analysis or not isinstance(analysis['key_points'], list):
-                analysis['key_points'] = [
-                    {
-                        "point": f"Discussion of {topic}",
-                        "context": "From document analysis",
-                        "importance": "Core concept from the content"
-                    }
-                    for topic in analysis['main_topics'][:3]
-                ]
-
+            logger.info(f"Received response of length {len(response)}")
+            logger.debug(f"Response preview: {response[:500]}...")
+            
+            # Parse the structured text response
+            analysis = self._parse_text_analysis(response)
+            
+            # Validate minimum required content
+            if not analysis.get('main_topics'):
+                logger.error("No main topics found in analysis")
+                raise ValueError("No main topics in analysis")
+                
+            if not analysis.get('key_points'):
+                logger.error("No key points found in analysis")
+                raise ValueError("No key points in analysis")
+            
             # Add document info
             analysis['document_info'] = [{
                 'id': doc['id'],
@@ -201,14 +134,17 @@ REQUIRED JSON STRUCTURE:
             analysis['llm_provider'] = self.llm.provider_name() if hasattr(self.llm, 'provider_name') else str(type(self.llm).__name__)
             analysis['llm_model'] = self.llm.model if hasattr(self.llm, 'model') else "default"
 
+            logger.info("Successfully completed content analysis")
             return analysis
 
         except Exception as e:
-            logger.error(f"Document analysis failed: {e}")
+            logger.error(f"Content analysis failed: {str(e)}")
             raise
 
     def _parse_text_analysis(self, text: str) -> Dict[str, Any]:
-        """Parse text-based analysis into structured format."""
+        """Parse structured text response into analysis dictionary."""
+        logger.info("Parsing analysis response")
+        
         analysis = {
             'main_topics': [],
             'key_points': [],
@@ -216,58 +152,88 @@ REQUIRED JSON STRUCTURE:
             'suggested_structure': []
         }
         
-        current_section = None
-        current_segment = None
-        
-        for line in text.split('\n'):
-            line = line.strip()
-            if not line:
-                continue
+        try:
+            current_section = None
+            lines = text.split('\n')
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
                 
-            # Detect sections
-            lower_line = line.lower()
-            if 'main topics:' in lower_line:
-                current_section = 'main_topics'
-            elif 'key points:' in lower_line:
-                current_section = 'key_points'
-            elif 'technical terms:' in lower_line:
-                current_section = 'technical_details'
-            elif 'discussion structure:' in lower_line:
-                current_section = 'structure'
-            elif line[0].isdigit() and '.' in line[:3]:
-                # Numbered point
-                content = line[line.find('.')+1:].strip()
-                if current_section == 'main_topics':
-                    analysis['main_topics'].append(content)
-                elif current_section == 'structure':
-                    current_segment = {
-                        'segment': content,
-                        'topics': [],
-                        'key_details': []
-                    }
-                    analysis['suggested_structure'].append(current_segment)
-            elif line.startswith('-'):
-                # Bullet point
-                content = line[1:].strip()
-                if current_section == 'key_points':
-                    parts = content.split(':', 1)
-                    if len(parts) == 2:
-                        analysis['key_points'].append({
-                            'point': parts[0].strip(),
-                            'context': parts[1].strip(),
-                            'importance': "Key point from content"
+                # Detect sections
+                line_upper = line.upper()
+                if 'MAIN TOPICS:' in line_upper:
+                    current_section = 'main_topics'
+                    logger.debug("Found MAIN TOPICS section")
+                    continue
+                elif 'KEY POINTS:' in line_upper:
+                    current_section = 'key_points'
+                    logger.debug("Found KEY POINTS section")
+                    continue
+                elif 'TECHNICAL TERMS:' in line_upper:
+                    current_section = 'technical_details'
+                    logger.debug("Found TECHNICAL TERMS section")
+                    continue
+                elif 'DISCUSSION STRUCTURE:' in line_upper:
+                    current_section = 'structure'
+                    logger.debug("Found DISCUSSION STRUCTURE section")
+                    continue
+                    
+                # Skip lines without content
+                if not current_section or not line or line.startswith('('):
+                    continue
+                    
+                # Process content based on section
+                if line.startswith(('•', '-', '*', '1.', '2.', '3.')):
+                    content = line.lstrip('•-*123. ').strip()
+                    if not content:
+                        continue
+                    
+                    if current_section == 'main_topics':
+                        analysis['main_topics'].append(content)
+                        logger.debug(f"Added main topic: {content}")
+                        
+                    elif current_section == 'key_points':
+                        parts = content.split(':', 1)
+                        if len(parts) == 2:
+                            point = {
+                                'point': parts[0].strip(),
+                                'context': parts[1].strip(),
+                                'importance': "Key discussion point"
+                            }
+                        else:
+                            point = {
+                                'point': content,
+                                'context': "From document analysis",
+                                'importance': "Key discussion point"
+                            }
+                        analysis['key_points'].append(point)
+                        logger.debug(f"Added key point: {point['point']}")
+                        
+                    elif current_section == 'technical_details':
+                        parts = content.split(':', 1)
+                        if len(parts) == 2:
+                            analysis['technical_details'].append({
+                                'term': parts[0].strip(),
+                                'explanation': parts[1].strip()
+                            })
+                            logger.debug(f"Added technical term: {parts[0].strip()}")
+                            
+                    elif current_section == 'structure':
+                        analysis['suggested_structure'].append({
+                            'segment': content,
+                            'topics': [],
+                            'key_details': [content]
                         })
-                elif current_section == 'technical_details':
-                    parts = content.split(':', 1)
-                    if len(parts) == 2:
-                        analysis['technical_details'].append({
-                            'term': parts[0].strip(),
-                            'explanation': parts[1].strip()
-                        })
-                elif current_segment is not None:
-                    current_segment['key_details'].append(content)
-        
-        return analysis
+                        logger.debug(f"Added structure segment: {content}")
+            
+            logger.info(f"Parsed {len(analysis['main_topics'])} topics, {len(analysis['key_points'])} points")
+            return analysis
+            
+        except Exception as e:
+            logger.error(f"Error parsing analysis response: {str(e)}")
+            raise
 
     def _extract_topics_from_content(self, content: str) -> List[str]:
         """Extract main topics from content if analysis fails."""

@@ -18,8 +18,9 @@ class OllamaService(LLMService):
         model_name: str = "mistral:latest",
         host: str = "http://localhost:11434",
         context_window: int = 4096,
-        max_retries: int = 3,
-        retry_delay: float = 1.0
+        max_retries: int = 5,
+        retry_delay: float = 1.0,
+        timeout: int = 60
     ):
         self.model_name = model_name
         self.host = host
@@ -28,6 +29,7 @@ class OllamaService(LLMService):
         self.session_manager = SessionManager()
         self.max_retries = max_retries
         self.retry_delay = retry_delay
+        self.timeout = timeout
         self._model_checked = False
     
     async def check_model_availability(self) -> bool:
@@ -75,34 +77,90 @@ class OllamaService(LLMService):
             if not turn['speaker'].strip() or not turn['content'].strip():
                 return False, f"Turn {i} fields cannot be empty"
             
-            # Check content length (40-60 words recommended)
             words = len(turn['content'].split())
-            target_words_per_turn = 50  # Based on typical podcast requirements
-            if words < target_words_per_turn * 0.8:  # Allow 20% below target
+            if words < 40:  # Minimum words per turn
                 return False, f"Turn {i} content too short ({words} words)"
         
         return True, ""
-    
-    def _extract_json(self, text: str) -> str:
-        """Extract JSON from text response."""
-        # Try to find JSON-like content
-        start_idx = text.find('{')
-        end_idx = text.rfind('}')
+
+    async def _process_chunk(
+        self,
+        prompt: str,
+        system_prompt: Optional[str] = None,
+        temperature: float = 0.7
+    ) -> str:
+        """Process a single chunk of the prompt."""
+        retries = 0
+        last_error = None
         
-        if start_idx == -1 or end_idx == -1:
-            start_idx = text.find('[')
-            end_idx = text.rfind(']')
-        
-        if start_idx != -1 and end_idx != -1:
-            potential_json = text[start_idx:end_idx + 1]
+        while retries < self.max_retries:
             try:
-                # Validate it's actually JSON
-                json.loads(potential_json)
-                return potential_json
-            except:
-                pass
-        
-        return text  # Return original if no JSON found
+                session = await self.session_manager.get_session()
+                
+                # Format prompt based on model type
+                if self.model_name.startswith('deepseek'):
+                    formatted_prompt = prompt
+                    if system_prompt:
+                        formatted_prompt = f"System: {system_prompt}\n\nUser: {prompt}\nAssistant:"
+                else:
+                    formatted_prompt = prompt
+                
+                data = {
+                    "model": self.model_name,
+                    "prompt": formatted_prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": min(2048, self.context_window),
+                        "stop": ["\nUser:", "\nAssistant:", "\nSystem:"]
+                    }
+                }
+                
+                logger.debug(f"Sending request to Ollama (attempt {retries + 1})")
+                logger.debug(f"Prompt length: {len(formatted_prompt)}")
+                
+                timeout = aiohttp.ClientTimeout(total=self.timeout)
+                async with session.post(
+                    f"{self.api_base}/generate",
+                    json=data,
+                    timeout=timeout
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        logger.error(f"Ollama API error (status {response.status}): {error_text}")
+                        raise RuntimeError(f"Ollama API error: {response.status} - {error_text}")
+                    
+                    result = await response.json()
+                    
+                    if 'error' in result:
+                        raise RuntimeError(f"Ollama API error: {result['error']}")
+                    
+                    response_text = result.get("response", "").strip()
+                    if not response_text:
+                        raise RuntimeError("Empty response from Ollama")
+                    
+                    logger.debug(f"Received response of length {len(response_text)}")
+                    return response_text
+
+            except asyncio.TimeoutError:
+                logger.warning(f"Request timed out (attempt {retries + 1}/{self.max_retries})")
+                last_error = "Request timed out"
+                retries += 1
+                if retries < self.max_retries:
+                    delay = self.retry_delay * (2 ** retries)
+                    logger.info(f"Retrying in {delay} seconds...")
+                    await asyncio.sleep(delay)
+                continue
+            except Exception as e:
+                logger.error(f"Request failed (attempt {retries + 1}): {str(e)}")
+                last_error = str(e)
+                retries += 1
+                if retries < self.max_retries:
+                    delay = self.retry_delay * (2 ** retries)
+                    await asyncio.sleep(delay)
+                continue
+
+        raise RuntimeError(f"Failed after {self.max_retries} retries. Last error: {last_error}")
 
     async def _call_ollama_with_retry(
         self,
@@ -112,64 +170,31 @@ class OllamaService(LLMService):
     ) -> str:
         """Make a request to the Ollama API with retry logic."""
         if not self._model_checked:
+            logger.info(f"Checking model availability: {self.model_name}")
             if not await self.check_model_availability():
-                raise RuntimeError("Model not available")
+                raise RuntimeError(f"Model {self.model_name} not available")
 
-        retries = 0
-        last_error = None
+        # For large models, break prompt into smaller chunks
+        max_chunk_size = 2000  # Maximum characters per chunk
+        if len(prompt) > max_chunk_size and self.model_name.endswith(('70b', '34b')):
+            chunks = [prompt[i:i + max_chunk_size] for i in range(0, len(prompt), max_chunk_size)]
+            logger.info(f"Breaking prompt into {len(chunks)} chunks")
+            responses = []
+            
+            for i, chunk in enumerate(chunks):
+                logger.info(f"Processing chunk {i+1}/{len(chunks)}")
+                try:
+                    response = await self._process_chunk(chunk, system_prompt, temperature)
+                    if response:
+                        responses.append(response)
+                except Exception as e:
+                    logger.error(f"Error processing chunk {i+1}: {e}")
+                    continue
+            
+            return " ".join(responses)
         
-        while retries < self.max_retries:
-            try:
-                session = await self.session_manager.get_session()
-                
-                # Combine prompts differently - separate with explicit roles
-                formatted_prompt = prompt
-                if system_prompt:
-                    formatted_prompt = f"System: {system_prompt}\n\nHuman: {prompt}\nAssistant:"
-                
-                data = {
-                    "model": self.model_name,
-                    "prompt": formatted_prompt,
-                    "stream": False,
-                    "options": {
-                        "temperature": temperature,
-                        "num_predict": min(4096, self.context_window),
-                        "stop": ["\nHuman:", "\nUser:", "\nSystem:"]
-                    }
-                }
-                
-                logger.debug(f"Sending request to Ollama: {data}")
-                
-                async with session.post(
-                    f"{self.api_base}/generate",
-                    json=data,
-                    timeout=60  # Increased timeout for longer generations
-                ) as response:
-                    if response.status != 200:
-                        error_data = await response.text()
-                        raise RuntimeError(f"Ollama API error: {response.status} - {error_data}")
-                    
-                    result = await response.json()
-                    logger.debug(f"Received response from Ollama: {result}")
-                    
-                    if 'error' in result:
-                        raise RuntimeError(f"Ollama API error: {result['error']}")
-                    
-                    response_text = result.get("response", "").strip()
-                    if not response_text:
-                        raise RuntimeError("Empty response from Ollama")
-                    
-                    return response_text
-                    
-            except Exception as e:
-                last_error = e
-                retries += 1
-                logger.warning(f"Attempt {retries} failed: {str(e)}")
-                if retries < self.max_retries:
-                    await asyncio.sleep(self.retry_delay * (2 ** (retries - 1)))
-                continue
-        
-        raise RuntimeError(f"Failed after {self.max_retries} retries. Last error: {last_error}")
+        # For smaller prompts, process directly
+        return await self._process_chunk(prompt, system_prompt, temperature)
 
     async def generate_text(
         self,
@@ -180,9 +205,21 @@ class OllamaService(LLMService):
     ) -> str:
         """Generate text response."""
         try:
-            return await self._call_ollama_with_retry(prompt, system_prompt, temperature)
+            logger.info("Starting text generation")
+            logger.debug(f"Prompt length: {len(prompt)}")
+            if system_prompt:
+                logger.debug(f"System prompt length: {len(system_prompt)}")
+            
+            response = await self._call_ollama_with_retry(prompt, system_prompt, temperature)
+            if not response:
+                logger.error("Empty response from Ollama")
+                return ""
+            
+            logger.info(f"Generated response of length {len(response)}")
+            return response
+            
         except Exception as e:
-            logger.error(f"Text generation failed: {e}")
+            logger.error(f"Text generation failed: {str(e)}")
             return ""
 
     async def generate_json(
@@ -195,24 +232,22 @@ class OllamaService(LLMService):
         try:
             # Add explicit JSON formatting instructions
             if not "Format your response as JSON" in prompt:
-                prompt += "\n\nIMPORTANT: Your response must be valid JSON data only. Do not include any other text."
+                prompt += "\n\nIMPORTANT: Format your entire response as valid JSON. Include only the JSON data without any other text."
             
             if system_prompt:
                 system_prompt += " Generate only valid JSON data."
             
             response = await self._call_ollama_with_retry(prompt, system_prompt, temperature)
+            if not response:
+                return {}
             
-            # Clean response to extract JSON
-            cleaned_response = self._extract_json(response)
-            if not cleaned_response:
-                raise ValueError("No JSON found in response")
-            
+            # Parse response as JSON
             try:
-                data = json.loads(cleaned_response)
-                return data
-            except json.JSONDecodeError as e:
-                logger.error(f"Failed to parse JSON: {e}\nResponse: {cleaned_response}")
-                raise ValueError("Invalid JSON in response")
+                return parse_json_response(response)
+            except Exception as e:
+                logger.error(f"Failed to parse JSON response: {e}")
+                logger.debug(f"Response content: {response[:500]}...")  # Log first 500 chars
+                return {}
                 
         except Exception as e:
             logger.error(f"JSON generation failed: {e}")
@@ -226,19 +261,21 @@ class OllamaService(LLMService):
     ) -> List[Dict[str, str]]:
         """Generate dialogue turns from prompt."""
         try:
-            # Ensure proper formatting instructions
+            # Ensure proper dialogue formatting instructions
             if not '"dialogue"' in prompt:
-                prompt += '\n\nYour response must be valid JSON with a "dialogue" array.'
+                prompt += '\n\nFormat your response as a dialogue. Each turn should include a speaker and their response.'
             
             if system_prompt:
-                system_prompt = "You are a dialogue generation AI. Generate natural conversations in JSON format."
+                system_prompt = "Generate a natural conversation following the format requested."
             
+            # Generate response
             response = await self._call_ollama_with_retry(prompt, system_prompt, temperature)
+            if not response:
+                return []
             
             # Try parsing as JSON first
             try:
-                cleaned_response = self._extract_json(response)
-                data = json.loads(cleaned_response)
+                data = parse_json_response(response)
                 if isinstance(data, dict) and 'dialogue' in data:
                     dialogue = data['dialogue']
                     valid, error = self._validate_dialogue_format(dialogue)
@@ -247,7 +284,7 @@ class OllamaService(LLMService):
                     else:
                         logger.warning(f"Invalid dialogue format: {error}")
             except Exception as e:
-                logger.warning(f"Failed to parse JSON response: {e}")
+                logger.warning(f"Failed to parse JSON dialogue: {e}")
             
             # Fallback to text extraction
             dialogue = extract_dialogue_from_text(response)
@@ -255,11 +292,10 @@ class OllamaService(LLMService):
             if valid:
                 return dialogue
             else:
-                logger.warning(f"Invalid extracted dialogue format: {error}")
+                logger.warning(f"Invalid extracted dialogue: {error}")
             
             return []
             
         except Exception as e:
             logger.error(f"Dialogue generation failed: {e}")
             return []
-        

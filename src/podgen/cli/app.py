@@ -1,5 +1,3 @@
-# src/podgen/cli/app.py
-
 """Main CLI application module."""
 
 import typer
@@ -36,6 +34,11 @@ from ..services.conversation import ConversationGenerator
 from ..services.tts import TTSService, TTSProvider, create_engine
 from ..services.llm import LLMProvider
 from ..services.audio import AudioProcessor
+
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
 
 # Add CLI options as enums
 class LLMType(str, Enum):
