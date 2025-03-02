@@ -1,320 +1,34 @@
-"""Main CLI application module."""
+"""Main CLI application entry point."""
 
 import typer
-from pathlib import Path
-from typing import Optional, Set, Dict
-from rich.console import Console
-from rich.prompt import Prompt, Confirm
-import readline
+import asyncio
 import os
 import logging
-from datetime import datetime
-from enum import Enum
-import asyncio
+from pathlib import Path
+from typing import Optional
+import importlib
 
-from ..help import CommandHelp
-from ..storage import DocumentStore, handle_doc_command
-from ..storage.json_storage import JSONStorage
-from ..storage.conversation import ConversationStore
-from .conversation_commands import (
-    handle_add_conversation,
-    handle_add_conversation_debug,
-    handle_list_conversations,
-    handle_remove_conversation,
-    handle_remove_all_conversations,
-    handle_remove_all_sources,
-    play_conversation,
-    show_conversation
-)
-from .cli_utils import setup_completion
+from rich.console import Console
+from rich.prompt import Confirm
+
 from .. import config
-from ..services.podcast_generator import PodcastGenerator
-from ..services.content_analyzer import ContentAnalyzer
-from ..services.conversation import ConversationGenerator
-from ..services.tts import TTSService, TTSProvider, create_engine
-from ..services.llm import LLMProvider
-from ..services.audio import AudioProcessor
+from .model_config import ModelConfig, LLMType
+from .async_app import AsyncApp
 
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-
-# Add CLI options as enums
-class LLMType(str, Enum):
-    openai = "openai"
-    ollama = "ollama"
-    llamacpp = "llamacpp"
-
-# Import TTSType from config
-TTSType = config.TTSProvider
-
+# Create Typer app
 app = typer.Typer()
 console = Console()
+
+# Get logger
 logger = logging.getLogger(__name__)
-
-class ModelConfig:
-    """Configuration for model selection."""
-    def __init__(
-        self,
-        llm_type: LLMType = LLMType.openai,
-        llm_model: str = "gpt-4",
-        tts_type: TTSType = TTSType.SYSTEM,
-        tts_model: Optional[str] = None,
-        output_dir: Path = Path("output"),
-    ):
-        self.llm_type = llm_type
-        self.llm_model = llm_model
-        self.tts_type = tts_type
-        self.tts_model = tts_model
-        self.output_dir = output_dir
-
-    @property
-    def llm_provider(self) -> LLMProvider:
-        return LLMProvider(self.llm_type.value)
-
-    @property
-    def tts_provider(self) -> TTSProvider:
-        return TTSProvider(self.tts_type.value)
-
-class AsyncApp:
-    """Handles async CLI operations."""
-    
-    def __init__(self, model_config: ModelConfig):
-        # Store model configuration
-        self.model_config = model_config
-        self.debug = False  # Add debug flag
-        
-        # Initialize storage
-        data_dir = Path(config.settings.data_dir)
-        data_dir.mkdir(parents=True, exist_ok=True)
-        print(f"DEBUG: Using data directory: {data_dir}")
-
-        self.storage = JSONStorage(data_dir)
-        self.doc_store = DocumentStore(data_dir / "documents.db")
-        self.conv_store = ConversationStore(data_dir / "conversations.db")
-        self.help_system = CommandHelp()
-
-        # Get API key from settings (which loads from .env)
-        api_key = config.settings.openai_api_key
-        if not api_key and self.model_config.llm_type == LLMType.openai:
-            raise ValueError("OPENAI_API_KEY not set in .env file")
-
-        # Initialize services
-        print("DEBUG: Initializing services...")
-        self.content_analyzer = ContentAnalyzer(
-            self.doc_store,
-            llm_provider=self.model_config.llm_provider,
-            llm_model=self.model_config.llm_model,
-            api_key=api_key
-        )
-        
-        self.conversation_gen = ConversationGenerator(
-            llm_provider=self.model_config.llm_provider,
-            llm_model=self.model_config.llm_model,
-            api_key=api_key
-        )
-        
-        # Create TTS engine based on configuration
-        tts_engine = None
-        if self.model_config.tts_type != TTSType.SYSTEM:
-            tts_engine = create_engine(
-                provider=TTSProvider(self.model_config.tts_type.value),
-                model_name=self.model_config.tts_model
-            )
-        
-        # Initialize TTS service with engine
-        self.tts_service = TTSService()
-        if tts_engine:
-            self.tts_service.add_engine(tts_engine, default=True)
-        
-        self.audio_processor = AudioProcessor()
-
-        self.podcast_generator = PodcastGenerator(
-            self.doc_store,
-            self.content_analyzer,
-            self.conversation_gen,
-            self.tts_service,
-            self.audio_processor
-        )
-
-        # Set up additional properties
-        self.loop = None
-        self.background_tasks: Set[asyncio.Task] = set()
-        self.conversation_tasks: Dict[int, asyncio.Task] = {}
-
-        print("DEBUG: AsyncApp initialization complete")
-
-    def _cleanup_background_tasks(self) -> None:
-        """Clean up completed background tasks."""
-        # Remove completed background tasks
-        done_tasks = {task for task in self.background_tasks if task.done()}
-        self.background_tasks.difference_update(done_tasks)
-
-        # Remove completed conversation tasks
-        done_convs = [
-            conv_id for conv_id, task in self.conversation_tasks.items()
-            if task.done()
-        ]
-        for conv_id in done_convs:
-            del self.conversation_tasks[conv_id]
-
-    async def run_interactive(self, input_text: Optional[str] = None):
-        """Run interactive CLI session."""
-        try:
-            # Log active models
-            console.print(f"[green]Active configuration:")
-            console.print(f"LLM: {self.model_config.llm_type} ({self.model_config.llm_model})")
-            console.print(f"TTS: {self.model_config.tts_type}", end="")
-            if self.model_config.tts_model:
-                console.print(f" ({self.model_config.tts_model})")
-            console.print()
-            
-            # Store input text from command line
-            current_text = input_text
-            
-            while True:
-                try:
-                    # Clean up completed background tasks
-                    self._cleanup_background_tasks()
-                    
-                    # Get input text
-                    if current_text:
-                        text_to_process = current_text
-                        current_text = None  # Clear for next iteration
-                    else:
-                        try:
-                            text_to_process = Prompt.ask("podgen")
-                        except EOFError:  # Handle Ctrl+D
-                            console.print("\nGoodbye!")
-                            break
-                    
-                    # Handle exit commands
-                    if text_to_process.lower() in ['/quit', '/exit', '/bye']:
-                        console.print("Goodbye!")
-                        break
-                        
-                    # Process commands
-                    if text_to_process.startswith('/'):
-                        print(f"DEBUG: Processing command: {text_to_process}")
-                        parts = text_to_process[1:].split()  # Remove leading slash
-                        if not parts:
-                            continue
-                            
-                        command = parts[0].lower()
-                        args = parts[1:]
-                        
-                        try:
-                            # Document management commands
-                            if command == 'add' and len(args) > 0 and args[0] == 'source':
-                                await handle_doc_command(text_to_process, self.doc_store, console)
-                            elif command == 'list' and len(args) > 0 and args[0] == 'sources':
-                                await handle_doc_command(text_to_process, self.doc_store, console)
-                            elif command == 'remove':
-                                if len(args) >= 2:
-                                    try:
-                                        if args[0] == 'all' and args[1] == 'sources':
-                                            # Call the async handler for removing all sources
-                                            await handle_remove_all_sources(console, self.doc_store)
-                                        elif args[0] == 'all' and args[1] == 'conversations':
-                                            # Call the async handler for removing all conversations
-                                            await handle_remove_all_conversations(console, self.conv_store, self.conversation_tasks)
-                                        elif args[0] == 'source' and len(args) > 1:
-                                            await handle_doc_command(text_to_process, self.doc_store, console)
-                                        elif args[0] == 'conversation' and len(args) > 1 and args[1].isdigit():
-                                            await handle_remove_conversation(
-                                                console,
-                                                self.conv_store,
-                                                int(args[1]),
-                                                self.conversation_tasks
-                                            )
-                                        else:
-                                            console.print("[red]Invalid remove command. Use:")
-                                            console.print("  /remove source <id>")
-                                            console.print("  /remove conversation <id>")
-                                            console.print("  /remove all sources")
-                                            console.print("  /remove all conversations")
-                                    except Exception as e:
-                                        console.print(f"[red]Error removing items: {str(e)}")
-                                        if self.debug:
-                                            import traceback
-                                            console.print(traceback.format_exc())
-                                else:
-                                    console.print("[red]Please specify what to remove")
-                            elif command == 'add' and len(args) > 0 and args[0] == 'conversation':
-                                debug_mode = len(args) > 1 and args[1] == 'debug'
-                                if debug_mode:
-                                    # Run with debug output
-                                    print("DEBUG: Starting conversation generation in debug mode...")
-                                    await handle_add_conversation_debug(
-                                        console,
-                                        self.conv_store,
-                                        self.doc_store,
-                                        self.podcast_generator,
-                                        self.model_config.output_dir
-                                    )
-                                else:
-                                    # Run asynchronously in normal mode
-                                    print("DEBUG: Starting conversation generation in async mode...")
-                                    task = await handle_add_conversation(
-                                        console,
-                                        self.conv_store,
-                                        self.doc_store,
-                                        self.podcast_generator,
-                                        self.model_config.output_dir
-                                    )
-                                    if task:
-                                        self.conversation_tasks[task.conversation_id] = task
-                            elif command == 'list' and len(args) > 0 and args[0] == 'conversations':
-                                handle_list_conversations(console, self.conv_store)
-                            elif command == 'play':
-                                if len(args) > 0 and args[0].isdigit():
-                                    await play_conversation(console, self.conv_store, int(args[0]))
-                                else:
-                                    console.print("[red]Please specify conversation ID")
-                            elif command == 'show':
-                                if len(args) > 0:
-                                    if args[0] == 'conversation':
-                                        if len(args) > 1 and args[1].isdigit():
-                                            show_conversation(console, self.conv_store, self.doc_store, int(args[1]))
-                                        else:
-                                            console.print("[red]Please specify conversation ID")
-                                    else:
-                                        console.print(f"[red]Unknown show target: {args[0]}")
-                                else:
-                                    console.print("[red]Please specify what to show")
-                            elif command == 'help':
-                                self.help_system.show_help(console, *args)
-                            else:
-                                console.print(f"[red]Unknown command: {command}")
-                                
-                        except Exception as e:
-                            console.print(f"[red]Error processing command: {str(e)}")
-                            if self.debug:
-                                import traceback
-                                console.print(traceback.format_exc())
-                            
-                except KeyboardInterrupt:  # Handle Ctrl+C
-                    console.print("\nOperation cancelled")
-                    continue
-                except Exception as e:
-                    console.print(f"[red]Error: {str(e)}")
-                    if self.debug:
-                        import traceback
-                        console.print(traceback.format_exc())
-                    continue
-                
-        except Exception as e:
-            console.print(f"[red]Error: {str(e)}")
-            raise typer.Exit(1)
 
 @app.command()
 def main(
     input_text: Optional[str] = typer.Argument(None, help="Input text (optional)"),
     format: Optional[str] = typer.Option(None, help="Named conversation format"),
-    output_dir: Path = typer.Option(
-        Path("output"),
-        help="Directory for output files"
+    output_dir: Optional[Path] = typer.Option(
+        None,
+        help="Directory for output files (overrides default location)"
     ),
     llm_type: Optional[LLMType] = typer.Option(
         None,
@@ -324,7 +38,7 @@ def main(
         None,
         help="Specific LLM model to use (overrides .env setting)"
     ),
-    tts_type: Optional[TTSType] = typer.Option(
+    tts_type: Optional[config.TTSProvider] = typer.Option(
         None,
         help="Type of TTS to use (overrides .env setting)"
     ),
@@ -332,43 +46,115 @@ def main(
         None,
         help="Specific TTS model to use (overrides .env setting)"
     ),
+    data_dir: Optional[Path] = typer.Option(
+        None,
+        help="Base directory for all data (overrides PODGEN_DIR env variable)"
+    ),
+    config_name: Optional[str] = typer.Option(
+        None,
+        help="Load a saved configuration profile"
+    ),
+    save_config: Optional[str] = typer.Option(
+        None,
+        help="Save current configuration to a named profile"
+    ),
     debug: bool = typer.Option(
         False,
         help="Enable debug output"
+    ),
+    setup_keys: bool = typer.Option(
+        False,
+        help="Run interactive API key setup before starting"
     )
 ):
     """Interactive podcast generator with model selection."""
-
-    # Use settings from .env as defaults
-    settings = config.settings
-
-    # Create model configuration using .env settings if CLI args not provided
-    model_config = ModelConfig(
-        llm_type=llm_type or LLMType(settings.llm_provider.value),
-        llm_model=llm_model or settings.llm_model,
-        tts_type=tts_type or TTSType(settings.tts_provider.value),
-        tts_model=tts_model or settings.tts_model,
-        output_dir=output_dir
-    )
-
-    # Initialize async app with model configuration
-    async_app = AsyncApp(model_config)
-    async_app.debug = debug  # Set debug flag
-
     try:
-        # Get event loop
-        loop = asyncio.get_event_loop()
+        # Configure logging based on debug flag
+        log_level = "DEBUG" if debug else config.settings.log_level
+        logging.basicConfig(
+            level=getattr(logging, log_level),
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            filename=config.settings.log_file
+        )
+        
+        # Override base directory if specified
+        if data_dir:
+            os.environ["PODGEN_DIR"] = str(data_dir)
+            # Reload settings with new path
+            importlib.reload(config)
+            logger.info(f"Using custom data directory: {data_dir}")
 
-        # Run interactive session
+        # Initialize API keys if requested
+        if setup_keys:
+            console.print("[bold]API Key Setup[/bold]")
+            
+            # Initialize OpenAI key
+            console.print("\n[bold]OpenAI API Key[/bold]")
+            openai_key = config.settings.get_openai_api_key()
+            if openai_key:
+                console.print("OpenAI API key is already configured.")
+                if Confirm.ask("Do you want to replace it?"):
+                    config.SecureKeyManager.prompt_for_key("openai-api", force_input=True)
+            else:
+                config.SecureKeyManager.prompt_for_key("openai-api")
+            
+            # Initialize ElevenLabs key
+            console.print("\n[bold]ElevenLabs API Key[/bold]")
+            elevenlabs_key = config.settings.get_elevenlabs_api_key()
+            if elevenlabs_key:
+                console.print("ElevenLabs API key is already configured.")
+                if Confirm.ask("Do you want to replace it?"):
+                    config.SecureKeyManager.prompt_for_key("elevenlabs-api", force_input=True)
+            else:
+                config.SecureKeyManager.prompt_for_key("elevenlabs-api")
+            
+            console.print("\n[green]API key setup complete![/green]")
+
+        # Get model configuration
+        model_config = None
+        
+        # Check if loading saved config
+        if config_name:
+            model_config = ModelConfig.load_from_file(config_name)
+            if not model_config:
+                console.print(f"[yellow]Warning: Could not load configuration '{config_name}'. Using defaults.")
+        
+        # Create new configuration if not loaded
+        if not model_config:
+            model_config = ModelConfig(
+                llm_type=llm_type,
+                llm_model=llm_model,
+                tts_type=tts_type,
+                tts_model=tts_model,
+                output_dir=output_dir
+            )
+        
+        # Save configuration if requested
+        if save_config:
+            config_path = model_config.save_to_file(save_config)
+            if config_path:
+                console.print(f"[green]Saved configuration as '{save_config}'")
+            else:
+                console.print("[red]Failed to save configuration")
+
+        # Initialize async application
+        async_app = AsyncApp(model_config, console)
+        async_app.debug = debug
+
+        # Run the event loop
+        loop = asyncio.get_event_loop()
         loop.run_until_complete(async_app.run_interactive(input_text))
 
+    except KeyboardInterrupt:
+        console.print("\nOperation cancelled by user")
+        return
+        
     except Exception as e:
         console.print(f"[red]Error: {str(e)}")
         if debug:
-            import traceback
-            console.print(traceback.format_exc())
+            console.print_exception()
         raise typer.Exit(1)
 
 if __name__ == "__main__":
     app()
-
+    

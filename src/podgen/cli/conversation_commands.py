@@ -22,7 +22,7 @@ from ..models.speaker_profiles import (
     get_available_styles,
     get_available_speaker_roles
 )
-from .audio_player import AudioPlayer
+from .services.player import AudioPlayer
 
 logger = logging.getLogger(__name__)
 
