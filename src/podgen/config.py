@@ -212,6 +212,8 @@ class Settings(BaseSettings):
     models_dir: Optional[Path] = Field(None, env="MODELS_DIR")
     logs_dir: Optional[Path] = Field(None, env="LOGS_DIR")
     
+    paths: Optional[PathManager] = None
+    
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -219,6 +221,9 @@ class Settings(BaseSettings):
     )
     
     def __init__(self, **kwargs):
+        # Clean environment variables that might have comments
+        self._clean_env_vars()
+        
         super().__init__(**kwargs)
         
         # Initialize path manager
@@ -235,6 +240,15 @@ class Settings(BaseSettings):
         if self.log_level and not self.log_file:
             # Default log file if not specified
             self.log_file = self.paths.get_log_path("podgen")
+    
+    def _clean_env_vars(self):
+        """Clean environment variables by removing comments."""
+        for var_name in ["LLM_PROVIDER", "TTS_PROVIDER"]:
+            if var_name in os.environ:
+                # Remove comments (anything after #)
+                value = os.environ[var_name].split('#')[0].strip()
+                os.environ[var_name] = value
+                logger.debug(f"Cleaned environment variable {var_name}: '{value}'")
     
     # API Settings - using key references instead of actual keys
     openai_api_key_ref: Optional[str] = Field("", env="OPENAI_API_KEY_REF")
@@ -262,7 +276,7 @@ class Settings(BaseSettings):
     device: str = Field(DEFAULT_DEVICE, env="DEVICE")
     
     # Logging
-    log_level: str = Field("INFO", env="LOG_LEVEL")
+    log_level: str = Field("DEBUG", env="LOG_LEVEL")
     log_file: Optional[Path] = Field(None, env="LOG_FILE")
     
     # Helper methods for secure API keys
@@ -316,14 +330,7 @@ class Settings(BaseSettings):
         for handler in root_logger.handlers[:]:
             root_logger.removeHandler(handler)
         
-        # Create console handler
-        console_handler = logging.StreamHandler()
-        console_handler.setLevel(level)
-        console_format = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-        console_handler.setFormatter(console_format)
-        root_logger.addHandler(console_handler)
-        
-        # Create file handler if log file is specified
+        # Create file handler - all logs go to file
         if self.log_file:
             # Ensure parent directory exists
             self.log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -334,7 +341,21 @@ class Settings(BaseSettings):
             file_handler.setFormatter(file_format)
             root_logger.addHandler(file_handler)
             
+            # Only log warnings and errors to console
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.WARNING)
+            console_format = logging.Formatter('%(levelname)s: %(message)s')
+            console_handler.setFormatter(console_format)
+            root_logger.addHandler(console_handler)
+            
             logger.info(f"Logging to file: {self.log_file}")
+        else:
+            # If no log file is specified, create minimal console handler for warnings/errors
+            console_handler = logging.StreamHandler()
+            console_handler.setLevel(logging.WARNING)
+            console_format = logging.Formatter('%(levelname)s: %(message)s')
+            console_handler.setFormatter(console_format)
+            root_logger.addHandler(console_handler)
 
 # Create global settings instance
 settings = Settings()
@@ -398,4 +419,3 @@ def get_tts_service():
         api_key=api_key,
         device=settings.device
     )
-

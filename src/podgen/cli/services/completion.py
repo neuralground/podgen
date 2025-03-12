@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 def path_completer(prefix: str) -> List[str]:
     """Complete file and directory paths."""
-    print(f"DEBUG: path_completer called with prefix='{prefix}'")
+    logger.debug(f"path_completer called with prefix='{prefix}'")
     
     try:
         # Handle empty prefix
@@ -31,7 +31,7 @@ def path_completer(prefix: str) -> List[str]:
             base_dir = os.path.dirname(abs_prefix)
             file_prefix = os.path.basename(prefix)
         
-        print(f"DEBUG: base_dir='{base_dir}', file_prefix='{file_prefix}'")
+        logger.debug(f"base_dir='{base_dir}', file_prefix='{file_prefix}'")
         
         # If base_dir is empty, use current directory
         if not base_dir:
@@ -54,11 +54,11 @@ def path_completer(prefix: str) -> List[str]:
                 else:
                     matches.append(full_path)
         
-        print(f"DEBUG: Found matches: {matches}")
+        logger.debug(f"Found matches: {matches}")
         return sorted(matches, key=lambda x: (not x.endswith('/'), x.lower()))
         
     except Exception as e:
-        print(f"DEBUG: Path completion error: {str(e)}")
+        logger.debug(f"Path completion error: {str(e)}")
         return []
 
 def command_completer(prefix: str, parsed_args: Dict[str, Any]) -> List[str]:
@@ -104,21 +104,21 @@ def command_completer(prefix: str, parsed_args: Dict[str, Any]) -> List[str]:
 def get_completion(text: str, state: int) -> Optional[str]:
     """Get completion for current input."""
     try:
-        print(f"\nDEBUG: Completion called with text='{text}', state={state}")
+        logger.debug(f"Completion called with text='{text}', state={state}")
         
         # Get the current line buffer to understand context
         import readline
         buffer = readline.get_line_buffer()
-        print(f"DEBUG: Full line buffer: '{buffer}'")
+        logger.debug(f"Full line buffer: '{buffer}'")
         
         if state == 0:
             # Check if we're in an "add source" context
             if buffer.startswith('/add source'):
                 # Extract just the path part for completion
                 path_prefix = text
-                print(f"DEBUG: Path completion with prefix='{path_prefix}'")
+                logger.debug(f"Path completion with prefix='{path_prefix}'")
                 matches = path_completer(path_prefix)
-                print(f"DEBUG: Path matches: {matches}")
+                logger.debug(f"Path matches: {matches}")
                 # Don't add command prefix - return raw matches
                 get_completion.matches = matches
             else:
@@ -131,14 +131,14 @@ def get_completion(text: str, state: int) -> Optional[str]:
         
         try:
             match = get_completion.matches[state]
-            print(f"DEBUG: Returning match: '{match}' for state {state}")
+            logger.debug(f"Returning match: '{match}' for state {state}")
             return match
         except (AttributeError, IndexError):
-            print(f"DEBUG: No match for state {state}")
+            logger.debug(f"No match for state {state}")
             return None
             
     except Exception as e:
-        print(f"DEBUG: Completion error: {str(e)}")
+        logger.debug(f"Completion error: {str(e)}")
         return None
 
 def setup_completion() -> None:
@@ -173,4 +173,3 @@ def setup_completion() -> None:
 
 # Initialize completion on import
 setup_completion()
-

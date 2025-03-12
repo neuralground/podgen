@@ -16,13 +16,14 @@ logger = logging.getLogger(__name__)
 class ElevenLabsEngine(TTSEngine):
     """High-quality TTS using ElevenLabs API."""
     
+    # Updated with valid ElevenLabs voice IDs
     VOICE_MAPPINGS = {
-        'professional_host': 'pNInz6obpgDQGcFmaJgB',  # Adam - professional, warm
-        'casual_host': 'onwK4e9ZLuTAKqWW03F9',       # Josh - casual, friendly
-        'technical_expert': 'ThT5KcBeYPX3keUQqHPh',   # Grace - clear, authoritative
-        'industry_expert': 'txJ0herwXYrAwh7HqXOX',    # Thomas - experienced, mature
-        'journalist': 'EXAVITQu4vr4xnSDxMaL',         # Emily - articulate, engaging
-        'commentator': 'VR6AewLTigWG4xSOukaG'         # Daniel - insightful, natural
+        'professional_host': 'ErXwobaYiN019PkySvjV',  # Antoni - professional
+        'casual_host': 'TxGEqnHWrfWFTfGW9XjX',        # Josh - casual, friendly
+        'technical_expert': 'MF3mGyEYCl7XYWbV9V6O',   # Elli - clear, technical
+        'industry_expert': 'VR6AewLTigWG4xSOukaG',    # Daniel - experienced
+        'journalist': 'EXAVITQu4vr4xnSDxMaL',         # Emily - articulate
+        'commentator': 'yoZ06aMxZJJ28mfd3POQ'         # Sam - conversational
     }
     
     def __init__(
@@ -48,6 +49,22 @@ class ElevenLabsEngine(TTSEngine):
         self.loaded = True
         return True
     
+    def get_elevenlabs_voice_id(self, voice_id: str) -> str:
+        """Map a voice ID to an ElevenLabs voice ID."""
+        # Map local voice IDs to ElevenLabs voice IDs
+        local_to_elevenlabs_mapping = {
+            # Map local voice IDs to ElevenLabs voice IDs
+            "p326": self.VOICE_MAPPINGS.get('casual_host'),        # Sam -> Josh
+            "p330": self.VOICE_MAPPINGS.get('industry_expert'),    # Michael -> Thomas
+            "p335": self.VOICE_MAPPINGS.get('professional_host'),  # Alex -> Adam
+            "p340": self.VOICE_MAPPINGS.get('journalist'),         # Emma -> Emily
+            "p347": self.VOICE_MAPPINGS.get('technical_expert'),   # Dr. Sarah -> Grace
+            "p339": self.VOICE_MAPPINGS.get('commentator')         # Fallback -> Daniel
+        }
+        
+        # Use mapped voice ID if it's a local ID, otherwise use the original
+        return local_to_elevenlabs_mapping.get(voice_id, voice_id)
+    
     async def synthesize(
         self,
         text: str,
@@ -57,17 +74,50 @@ class ElevenLabsEngine(TTSEngine):
         """Generate speech using ElevenLabs API."""
         try:
             # Get voice ID
-            voice_id = voice_config.voice_id if voice_config else \
+            original_voice_id = voice_config.voice_id if voice_config else \
                       self.VOICE_MAPPINGS.get('casual_host')
+            
+            voice_id = self.get_elevenlabs_voice_id(original_voice_id)
+            
+            logger.debug(f"Using voice ID: {voice_id} (original: {original_voice_id})")
+            
+            # Check if text is too long - ElevenLabs has limits
+            if len(text) > 5000:
+                logger.warning(f"Text length ({len(text)}) exceeds recommended limit. Truncating to 5000 chars.")
+                text = text[:5000]
+            
+            # Check if text is empty
+            if not text or text.strip() == "":
+                logger.warning("Empty text provided for synthesis, skipping")
+                return False
+                
+            # Clean the text to avoid common issues
+            text = text.replace('"', "'").replace('\n\n', '\n').strip()
             
             url = f"{self.base_url}/text-to-speech/{voice_id}"
             
             # Add SSML for more natural speech patterns
             ssml_text = self._add_speech_marks(text)
             
+            # Ensure model name is valid
+            model_id = self.model_name or "eleven_monolingual_v1"
+            
+            # Map model names to ElevenLabs model IDs if needed
+            model_mapping = {
+                "eleven_monolingual_v1": "eleven_monolingual_v1",
+                "eleven_multilingual_v1": "eleven_multilingual_v1",
+                "eleven_multilingual_v2": "eleven_multilingual_v2",
+                "eleven_turbo_v2": "eleven_turbo_v2"
+            }
+            
+            # Use the mapped model ID if available, otherwise use the original
+            model_id = model_mapping.get(model_id, model_id)
+            
+            logger.debug(f"Using ElevenLabs model: {model_id}")
+            
             data = {
                 "text": ssml_text,
-                "model_id": self.model_name or "eleven_monolingual_v1",
+                "model_id": model_id,
                 "voice_settings": {
                     "stability": voice_config.stability if voice_config else 0.5,
                     "similarity_boost": 0.75,
@@ -78,14 +128,40 @@ class ElevenLabsEngine(TTSEngine):
             # Save as MP3 first
             mp3_path = output_path.with_suffix('.mp3')
             
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, json=data, headers=self.headers) as response:
-                    if response.status != 200:
-                        logger.error(f"ElevenLabs API error: {response.status}")
+            # Implement retry logic
+            max_retries = 3
+            retry_delay = 2  # seconds
+            
+            for retry in range(max_retries):
+                try:
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(url, json=data, headers=self.headers) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                logger.error(f"ElevenLabs API error: {response.status}")
+                                logger.error(f"Error details: {error_text}")
+                                
+                                if retry < max_retries - 1:
+                                    logger.info(f"Retrying in {retry_delay} seconds... (Attempt {retry+1}/{max_retries})")
+                                    await asyncio.sleep(retry_delay)
+                                    retry_delay *= 2  # Exponential backoff
+                                    continue
+                                return False
+                            
+                            with open(mp3_path, 'wb') as f:
+                                f.write(await response.read())
+                            
+                            # Success, break out of retry loop
+                            break
+                except Exception as e:
+                    logger.error(f"ElevenLabs API request failed: {e}")
+                    if retry < max_retries - 1:
+                        logger.info(f"Retrying in {retry_delay} seconds... (Attempt {retry+1}/{max_retries})")
+                        await asyncio.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error("Max retries reached, giving up")
                         return False
-                    
-                    with open(mp3_path, 'wb') as f:
-                        f.write(await response.read())
             
             # Convert to WAV if needed
             if output_path.suffix.lower() == '.wav':

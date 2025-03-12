@@ -44,12 +44,23 @@ class PodcastCommands:
         
         # Track background tasks
         self.conversation_tasks: Dict[int, asyncio.Task] = {}
+        
+        # Validate that podcast generator is provided
+        if not self.podcast_gen:
+            self.podcast_gen = None
     
     async def create(self, console: Console, args: List[str]) -> None:
         """Create a new podcast from documents."""
         try:
             # Check for debug mode flag
-            debug_mode = "--debug" in args
+            debug_mode = "--debug" in args or "debug" in args
+            
+            # Check if podcast generator is initialized
+            if not self.podcast_gen:
+                console.print("[red]Podcast generator not initialized. Please run podgen with the proper configuration.")
+                console.print("[yellow]You need to specify a TTS engine and model.")
+                console.print("[yellow]Example: podgen --tts-type elevenlabs --tts-model eleven_monolingual_v1")
+                return
             
             # Get all documents
             documents = self.doc_store.list_documents()
@@ -117,7 +128,7 @@ class PodcastCommands:
                 console.print("Use '/podcast list' to check the status")
             else:
                 # Run in foreground with debug output
-                console.print("[yellow]Starting podcast generation in debug mode...")
+                logger.debug("Starting podcast generation in debug mode...")
                 await self._generate_podcast_debug(
                     conversation.id,
                     [doc.id for doc in documents],
@@ -252,7 +263,7 @@ class PodcastCommands:
                 return
                 
             # Display podcast details
-            console.print(f"\n[bold]Podcast {podcast_id}: {conversation.title}[/bold]")
+            console.print(f"\n[bold blue]Podcast {podcast_id}: {conversation.title}[/bold blue]")
             console.print(f"Status: {conversation.status.value}")
             console.print(f"Created: {conversation.created_date.strftime('%Y-%m-%d %H:%M')}")
             
@@ -265,11 +276,23 @@ class PodcastCommands:
                 console.print(f"Error: {conversation.error}")
             
             # Display metadata
-            console.print("\n[bold]Configuration:[/bold]")
+            console.print("\n[bold green]Configuration:[/bold green]")
             if conversation.metadata:
                 # Style and speakers
                 style = conversation.metadata.get("style", "Not specified")
                 console.print(f"Style: {style}")
+                
+                # Display model information
+                llm_provider = conversation.metadata.get("llm_provider", "Not specified")
+                llm_model = conversation.metadata.get("llm_model", "Not specified")
+                tts_provider = conversation.metadata.get("tts_provider", "Not specified")
+                tts_model = conversation.metadata.get("tts_model", "Not specified")
+                
+                console.print(f"\n[bold]Models Used:[/bold]")
+                console.print(f"LLM Provider: {llm_provider}")
+                console.print(f"LLM Model: {llm_model}")
+                console.print(f"TTS Provider: {tts_provider}")
+                console.print(f"TTS Model: {tts_model}")
                 
                 speaker_roles = conversation.metadata.get("speaker_roles", [])
                 if speaker_roles:
@@ -286,7 +309,7 @@ class PodcastCommands:
                 # Source documents
                 doc_ids = conversation.metadata.get("document_ids", [])
                 if doc_ids:
-                    console.print("\n[bold]Source Documents:[/bold]")
+                    console.print("\n[bold yellow]Source Documents:[/bold yellow]")
                     for doc_id in doc_ids:
                         doc = self.doc_store.get_document(doc_id)
                         if doc:
@@ -299,7 +322,7 @@ class PodcastCommands:
             
             # Display audio information
             if conversation.audio_path:
-                console.print("\n[bold]Audio:[/bold]")
+                console.print("\n[bold magenta]Audio:[/bold magenta]")
                 console.print(f"Path: {conversation.audio_path}")
                 
                 if conversation.audio_path.exists():
@@ -328,12 +351,9 @@ class PodcastCommands:
             
             # Display transcript
             if conversation.transcript:
-                console.print("\n[bold]Transcript:[/bold]")
-                console.print(Markdown(conversation.transcript[:500] + "..." if len(conversation.transcript) > 500 else conversation.transcript))
-                
-                if len(conversation.transcript) > 500:
-                    if Confirm.ask("Show full transcript?"):
-                        console.print(Markdown(conversation.transcript))
+                console.print("\n[bold cyan]Transcript:[/bold cyan]")
+                # Always show the full transcript
+                console.print(Markdown(conversation.transcript))
             
         except Exception as e:
             logger.error(f"Error showing podcast: {e}")
@@ -468,6 +488,95 @@ class PodcastCommands:
             logger.error(f"Error removing all podcasts: {e}")
             console.print(f"[red]Error removing all podcasts: {str(e)}")
     
+    async def setup(self, console: Console, args: List[str]) -> None:
+        """Set up podcast generator configuration."""
+        try:
+            # Import necessary modules
+            from ...config import settings
+            from ...services.tts import TTSProvider, create_engine, TTSService
+            from ...services.podcast_generator import PodcastGenerator
+            from ...services.content_analyzer import ContentAnalyzer
+            from ...services.conversation import ConversationGenerator
+            from ...services.audio import AudioProcessor
+            from rich.prompt import Prompt
+            
+            console.print("[bold blue]Podcast Generator Setup[/bold blue]")
+            console.print("This will help you configure the podcast generator with the right settings.")
+            
+            # Check for TTS configuration
+            console.print("\n[yellow]TTS Configuration:[/yellow]")
+            
+            # Get TTS provider
+            available_providers = ["system", "elevenlabs"]
+            provider_str = Prompt.ask(
+                "Select TTS provider",
+                choices=available_providers,
+                default="elevenlabs"
+            )
+            
+            provider = TTSProvider.SYSTEM if provider_str == "system" else TTSProvider.ELEVENLABS
+            
+            # Get TTS model if needed
+            model = None
+            api_key = None
+            
+            if provider == TTSProvider.ELEVENLABS:
+                console.print("\n[yellow]ElevenLabs Configuration:[/yellow]")
+                
+                # Check if API key is set
+                api_key = settings.get_elevenlabs_api_key()
+                if not api_key:
+                    console.print("[red]ElevenLabs API key not found.[/red]")
+                    console.print("You can set it using the /key set elevenlabs command.")
+                    api_key = Prompt.ask("Enter your ElevenLabs API key (or press Enter to skip)")
+                    if api_key:
+                        from ...config import SecureKeyManager
+                        SecureKeyManager.set_key("elevenlabs-api", api_key)
+                        console.print("[green]API key saved.[/green]")
+                
+                models = ["eleven_monolingual_v1", "eleven_multilingual_v1", "eleven_multilingual_v2", "eleven_turbo_v2"]
+                model = Prompt.ask(
+                    "Select TTS model",
+                    choices=models,
+                    default="eleven_monolingual_v1"
+                )
+            
+            # Create TTS engine if needed
+            tts_service = TTSService()
+            if provider != TTSProvider.SYSTEM:
+                tts_engine = create_engine(
+                    provider=provider,
+                    model_name=model,
+                    api_key=api_key
+                )
+                if tts_engine:
+                    tts_service.add_engine(tts_engine, default=True)
+            
+            # Create necessary components
+            content_analyzer = ContentAnalyzer(doc_store=self.doc_store)
+            conversation_gen = ConversationGenerator()
+            audio_processor = AudioProcessor()
+            
+            # Create podcast generator
+            self.podcast_gen = PodcastGenerator(
+                doc_store=self.doc_store,
+                content_analyzer=content_analyzer,
+                conversation_gen=conversation_gen,
+                tts_service=tts_service,
+                audio_processor=audio_processor
+            )
+            
+            console.print("\n[green]Podcast generator configured successfully![/green]")
+            console.print("You can now create podcasts using the /add conversation command.")
+            
+            # Update registry if available
+            if hasattr(self, 'registry') and hasattr(self.registry, 'podcast_commands'):
+                self.registry.podcast_commands.podcast_gen = self.podcast_gen
+            
+        except Exception as e:
+            logger.error(f"Error setting up podcast generator: {e}")
+            console.print(f"[red]Error setting up podcast generator: {str(e)}")
+    
     async def _prompt_for_config(self, console: Console) -> Dict[str, Any]:
         """Prompt user for podcast configuration."""
         # Get podcast title
@@ -561,12 +670,35 @@ class PodcastCommands:
                 debug=False
             )
             
-            # Update conversation with results
+            # Get the updated metadata with model information
+            conversation = self.conv_store.get(conversation_id)
+            if conversation:
+                # Update metadata with the latest config that includes model information
+                updated_metadata = conversation.metadata.copy() if conversation.metadata else {}
+                
+                # Get the latest metadata from the podcast generator
+                if hasattr(self.podcast_gen, 'tts_service'):
+                    tts_engine = self.podcast_gen.tts_service.get_default_engine() if hasattr(self.podcast_gen.tts_service, 'get_default_engine') else None
+                    if tts_engine:
+                        updated_metadata['tts_provider'] = tts_engine.__class__.__name__
+                        if hasattr(tts_engine, 'model_name'):
+                            updated_metadata['tts_model'] = tts_engine.model_name
+                        elif hasattr(tts_engine, 'model'):
+                            updated_metadata['tts_model'] = tts_engine.model
+                
+                # Get LLM information
+                if hasattr(self.podcast_gen, 'analyzer') and hasattr(self.podcast_gen.analyzer, 'llm'):
+                    updated_metadata['llm_provider'] = self.podcast_gen.analyzer.llm.__class__.__name__
+                    if hasattr(self.podcast_gen.analyzer.llm, 'model_name'):
+                        updated_metadata['llm_model'] = self.podcast_gen.analyzer.llm.model_name
+            
+            # Update conversation with results and metadata
             self.conv_store.update_progress(
                 conversation_id,
                 1.0,
                 transcript=transcript,
-                audio_path=audio_file
+                audio_path=audio_file,
+                metadata=updated_metadata
             )
             
             logger.info(f"Podcast {conversation_id} generated successfully")
@@ -599,8 +731,8 @@ class PodcastCommands:
                     console.print(f"[yellow]{stage} - Progress: {progress:.1%}")
             
             # Generate podcast with debug output
-            console.print("\n[yellow]Starting podcast generation...")
-            console.print("[yellow]Step 1: Content Analysis")
+            logger.debug("Starting podcast generation in debug mode...")
+            console.print("\n[yellow]Step 1: Content Analysis")
             
             transcript, audio_file = await self.podcast_gen.generate_podcast(
                 doc_ids=doc_ids,
@@ -610,12 +742,43 @@ class PodcastCommands:
                 debug=True
             )
             
-            # Update conversation with results
+            # Get the updated metadata with model information
+            conversation = self.conv_store.get(conversation_id)
+            if conversation:
+                # Update metadata with the latest config that includes model information
+                updated_metadata = conversation.metadata.copy() if conversation.metadata else {}
+                
+                # Get the latest metadata from the podcast generator
+                if hasattr(self.podcast_gen, 'tts_service'):
+                    tts_engine = self.podcast_gen.tts_service.get_default_engine() if hasattr(self.podcast_gen.tts_service, 'get_default_engine') else None
+                    if tts_engine:
+                        updated_metadata['tts_provider'] = tts_engine.__class__.__name__
+                        if hasattr(tts_engine, 'model_name'):
+                            updated_metadata['tts_model'] = tts_engine.model_name
+                        elif hasattr(tts_engine, 'model'):
+                            updated_metadata['tts_model'] = tts_engine.model
+                
+                # Get LLM information
+                if hasattr(self.podcast_gen, 'analyzer') and hasattr(self.podcast_gen.analyzer, 'llm'):
+                    updated_metadata['llm_provider'] = self.podcast_gen.analyzer.llm.__class__.__name__
+                    if hasattr(self.podcast_gen.analyzer.llm, 'model_name'):
+                        updated_metadata['llm_model'] = self.podcast_gen.analyzer.llm.model_name
+                        
+                # Log the metadata for debugging
+                logger.debug(f"Updated metadata: {updated_metadata}")
+                console.print("\n[blue]Model Information:")
+                console.print(f"LLM Provider: {updated_metadata.get('llm_provider', 'Not specified')}")
+                console.print(f"LLM Model: {updated_metadata.get('llm_model', 'Not specified')}")
+                console.print(f"TTS Provider: {updated_metadata.get('tts_provider', 'Not specified')}")
+                console.print(f"TTS Model: {updated_metadata.get('tts_model', 'Not specified')}")
+            
+            # Update conversation with results and metadata
             self.conv_store.update_progress(
                 conversation_id,
                 1.0,
                 transcript=transcript,
-                audio_path=audio_file
+                audio_path=audio_file,
+                metadata=updated_metadata
             )
             
             console.print("\n[green]Generation complete!")
@@ -629,9 +792,13 @@ class PodcastCommands:
             self.conv_store.mark_failed(conversation_id, str(e))
             console.print_exception()
 
-def register_commands(registry):
+def register_commands(registry, podcast_gen=None):
     """Register podcast commands with the registry."""
-    podcast_commands = PodcastCommands()
+    # Create podcast commands with the provided podcast generator
+    podcast_commands = PodcastCommands(podcast_gen=podcast_gen)
+    
+    # Store the podcast commands instance in the registry for later access
+    registry.podcast_commands = podcast_commands
     
     # Register main command
     registry.register(
@@ -662,7 +829,7 @@ def register_commands(registry):
     registry.register_subcommand(
         "podcast", "show", 
         podcast_commands.show,
-        "Show podcast details"
+        "Show podcast details and transcript"
     )
     
     registry.register_subcommand(
@@ -677,22 +844,10 @@ def register_commands(registry):
         "Remove all podcasts"
     )
     
-    # Aliases for backward compatibility
-    registry.register(
-        "add", 
-        lambda console, args: podcast_commands.create(console, []) if args and args[0] == "conversation" else None,
-        "Create podcast (alias for /podcast create)"
+    registry.register_subcommand(
+        "podcast", "setup", 
+        podcast_commands.setup,
+        "Set up podcast generator configuration"
     )
     
-    registry.register(
-        "list", 
-        lambda console, args: podcast_commands.list(console, []) if args and args[0] == "conversations" else None,
-        "List podcasts (alias for /podcast list)"
-    )
-    
-    registry.register(
-        "play", 
-        lambda console, args: podcast_commands.play(console, args),
-        "Play podcast (alias for /podcast play)"
-    )
-    
+    # No more aliases - removed as requested

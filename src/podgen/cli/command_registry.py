@@ -1,10 +1,10 @@
 """Command registry system for podgen CLI."""
 
 import logging
+import inspect
 from typing import Dict, List, Any, Callable, Optional, Awaitable, Union
 from rich.console import Console
 import asyncio
-import inspect
 import functools
 
 logger = logging.getLogger(__name__)
@@ -42,14 +42,18 @@ class Command:
     def get_subcommand(self, name: str) -> Optional['Command']:
         """Get a subcommand by name."""
         return self.subcommands.get(name)
-        
+
     async def execute(self, console: Console, args: List[str]) -> Any:
         """Execute the command handler with arguments."""
         try:
             if self.is_async:
                 return await self.handler(console, args)
             else:
-                return self.handler(console, args)
+                result = self.handler(console, args)
+                # Handle case where a non-async handler returns a coroutine
+                if inspect.iscoroutine(result):
+                    return await result
+                return result
         except Exception as e:
             logger.error(f"Error executing command {self.name}: {e}")
             console.print(f"[red]Error executing command: {str(e)}")
@@ -131,27 +135,27 @@ class CommandRegistry:
         """Execute a command from user input."""
         if not input_text.startswith('/'):
             return None
-            
+                
         parts = input_text[1:].split()  # Remove leading slash
         if not parts:
             return None
-            
+                
         command_name = parts[0].lower()
         args = parts[1:]
-        
+            
         command = self.get_command(command_name)
         if not command:
             console.print(f"[red]Unknown command: {command_name}")
             return None
-            
+                
         # Check for subcommands
         if args and command.subcommands:
             subcommand_name = args[0].lower()
             subcommand = command.get_subcommand(subcommand_name)
-            
+                
             if subcommand:
                 return await subcommand.execute(console, args[1:])
-        
+            
         # Execute the main command
         return await command.execute(console, args)
 

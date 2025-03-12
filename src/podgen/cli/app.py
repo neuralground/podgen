@@ -12,7 +12,7 @@ from rich.console import Console
 from rich.prompt import Confirm
 
 from .. import config
-from .model_config import ModelConfig, LLMType
+from .services.model_config import ModelConfig, LLMType
 from .async_app import AsyncApp
 
 # Create Typer app
@@ -121,6 +121,26 @@ def main(
         
         # Create new configuration if not loaded
         if not model_config:
+            # Get default TTS settings from environment if not specified
+            if tts_type is None:
+                env_tts_type = config.settings.tts_provider
+                tts_type = env_tts_type if env_tts_type else None
+                logger.info(f"Using TTS provider from environment: {tts_type}")
+            
+            if tts_model is None:
+                env_tts_model = config.settings.tts_model
+                tts_model = env_tts_model if env_tts_model else None
+                logger.info(f"Using TTS model from environment: {tts_model}")
+                
+            # Default to ElevenLabs if not specified
+            if tts_type is None:
+                tts_type = config.TTSProvider.ELEVENLABS
+                logger.info(f"Defaulting to ElevenLabs TTS provider")
+                
+            if tts_model is None and tts_type == config.TTSProvider.ELEVENLABS:
+                tts_model = "eleven_monolingual_v1"
+                logger.info(f"Defaulting to eleven_monolingual_v1 model")
+            
             model_config = ModelConfig(
                 llm_type=llm_type,
                 llm_model=llm_model,
@@ -157,4 +177,3 @@ def main(
 
 if __name__ == "__main__":
     app()
-    

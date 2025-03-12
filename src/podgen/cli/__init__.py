@@ -8,6 +8,8 @@ from .conversation_commands import (
     play_conversation,
     show_conversation
 )
+from .services.model_config import ModelConfig
+
 
 __all__ = [
     'app',

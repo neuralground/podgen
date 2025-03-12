@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class DocumentStore:
     def _init_db(self):
         """Initialize the database schema"""
-        print("DEBUG: Initializing document store database")
+        logger.debug("Initializing document store database")
 
         with sqlite3.connect(self.db_path) as conn:
             c = conn.cursor()
@@ -52,51 +52,64 @@ class DocumentStore:
             c.execute("CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)")
             
             conn.commit()
-            print("DEBUG: Database initialization complete")
+            logger.debug("Database initialization complete")
 
     async def add_file(self, file_path: Path) -> Document:
         """Add a file to the document store with content caching."""
+        logger.debug(f"DocumentStore.add_file called with: {file_path}")
         if not file_path.exists():
+            logger.debug(f"File not found: {file_path}")
             raise FileNotFoundError(f"File not found: {file_path}")
         
         try:
             # Read the original file content
+            logger.debug(f"Reading file content: {file_path}")
             original_content = file_path.read_bytes()
             file_hash = self._compute_hash(original_content)
+            logger.debug(f"File hash: {file_hash}")
             
             with sqlite3.connect(self.db_path) as conn:
                 c = conn.cursor()
                 c.execute("SELECT id FROM documents WHERE hash = ?", (file_hash,))
                 if c.fetchone():
+                    logger.debug(f"File already exists in store: {file_path}")
                     raise ValueError(f"File already exists in store: {file_path}")
                 
                 # Store locally for initial processing
+                logger.debug(f"Storing local copy")
                 local_path = self._store_local_file(file_path)
                 
                 # Extract content
+                logger.debug(f"Finding suitable extractor")
                 extractor = next(
                     (ext for ext in self.extractors if ext.supports(str(file_path))),
                     None
                 )
                 
                 if not extractor:
+                    logger.debug(f"No suitable extractor found")
                     raise ValueError(f"No suitable extractor found for {file_path}")
                 
+                logger.debug(f"Using extractor: {type(extractor).__name__}")
                 metadata = {}
+                logger.debug(f"Extracting content")
                 content = await extractor.extract(str(file_path), metadata)
+                logger.debug(f"Content extracted, size: {len(content) if content else 0}")
                 
                 if content is None:
+                    logger.debug(f"Failed to extract content")
                     raise ValueError(f"Failed to extract content from {file_path}")
                 
                 now = datetime.datetime.now()
                 content_hash = self._compute_hash(content)
                 
                 # Insert document with original content
+                logger.debug(f"Inserting into database")
                 c.execute("""
                     INSERT INTO documents 
                     (source, doc_type, hash, original_content, local_path, content, 
-                     content_hash, content_date, added_date, last_accessed, 
-                     extracted_text, metadata)
+                    content_hash, content_date, added_date, last_accessed, 
+                    extracted_text, metadata)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     str(file_path),
@@ -114,13 +127,20 @@ class DocumentStore:
                 ))
                 
                 doc_id = c.lastrowid
+                logger.debug(f"Inserted document with ID: {doc_id}")
+                
+                conn.commit()
+                logger.debug(f"Database commit successful")
                 
                 # Remove local file as we have stored the content
                 try:
                     local_path.unlink()
+                    logger.debug(f"Temporary file removed: {local_path}")
                 except Exception as e:
+                    logger.debug(f"Failed to remove temporary file {local_path}: {e}")
                     logger.warning(f"Failed to remove temporary file {local_path}: {e}")
                 
+                logger.debug(f"Creating Document object to return")
                 return Document(
                     id=doc_id,
                     source=str(file_path),
@@ -137,6 +157,7 @@ class DocumentStore:
                 )
                 
         except Exception as e:
+            logger.debug(f"Error in add_file: {type(e).__name__}: {str(e)}")
             logger.error(f"Error adding file: {e}")
             raise
 
@@ -145,7 +166,7 @@ class DocumentStore:
         self.db_path = db_path
         self.data_dir = db_path.parent / "files"
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        print(f"DEBUG: Initializing DocumentStore with DB: {db_path}, Files: {self.data_dir}")
+        logger.debug(f"Initializing DocumentStore with DB: {db_path}, Files: {self.data_dir}")
         self._init_db()
         
         # Initialize extractors
@@ -164,11 +185,11 @@ class DocumentStore:
 
     def _store_local_file(self, source_path: Path) -> Path:
         """Store a local file in the data directory."""
-        print(f"DEBUG: Storing local file {source_path}")
+        logger.debug(f"Storing local file {source_path}")
         dest_path = self.data_dir / f"{self._compute_hash(source_path.read_bytes())}{source_path.suffix}"
         if not dest_path.exists():
             shutil.copy2(source_path, dest_path)
-        print(f"DEBUG: File stored at {dest_path}")
+        logger.debug(f"File stored at {dest_path}")
         return dest_path
 
     async def add_url(self, url: str) -> Document:
@@ -292,7 +313,7 @@ class DocumentStore:
 
     def list_documents(self) -> List[Document]:
         """List all documents in the store"""
-        print("DEBUG: Listing documents")
+        logger.debug("Listing documents")
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             c = conn.cursor()
@@ -303,7 +324,7 @@ class DocumentStore:
             """)
             
             rows = c.fetchall()
-            print(f"DEBUG: Found {len(rows)} documents")
+            logger.debug(f"Found {len(rows)} documents")
             
             docs = []
             for row in rows:
@@ -324,7 +345,7 @@ class DocumentStore:
                     )
                     docs.append(doc)
                 except Exception as e:
-                    print(f"DEBUG: Error loading document: {type(e).__name__}: {str(e)}")
+                    logger.debug(f"Error loading document: {type(e).__name__}: {str(e)}")
                     continue
             
             return docs
@@ -415,4 +436,3 @@ class DocumentStore:
         except Exception as e:
             logger.error(f"Failed to refresh document {doc_id}: {e}")
             return False
-

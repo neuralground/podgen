@@ -115,7 +115,7 @@ async def handle_add_conversation(
             return None
 
         if debug:
-            console.print("\n[yellow]Starting conversation generation in debug mode...")
+            logger.debug("Starting conversation generation in debug mode...")
             console.print(f"Found {len(documents)} documents to process:")
             for doc in documents:
                 console.print(f"  - {doc.title} ({doc.doc_type})")
@@ -319,7 +319,7 @@ async def handle_add_conversation_debug(
             console.print("\n[green]Generation Complete!")
             console.print(f"Generated transcript ({len(transcript)} chars)")
             console.print(f"Audio saved to: {audio_file}")
-            
+
         except Exception as e:
             console.print(f"\n[red]Generation failed!")
             console.print(f"Error: {str(e)}")
@@ -554,7 +554,7 @@ def show_conversation(
     # Get conversation style and speakers
     metadata = conversation.metadata
     style = metadata.get('style', 'Not specified')
-    console.print(f"\nConversation Format")
+    console.print("\nConversation Format")
     console.print("==================")
     console.print(f"Style: {style}")
     
@@ -665,4 +665,3 @@ def show_conversation(
         console.print(Markdown(conversation.transcript))
     else:
         console.print("\n[red]No transcript available[/red]")
-

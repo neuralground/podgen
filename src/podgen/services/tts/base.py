@@ -115,6 +115,10 @@ class TTSService:
         if default or not self.default_engine:
             self.default_engine = engine
     
+    def get_default_engine(self) -> TTSEngine:
+        """Get the default engine."""
+        return self.default_engine
+    
     async def synthesize(
         self,
         text: str,
@@ -181,9 +185,18 @@ class TTSService:
             Path to the generated audio file or None if synthesis failed
         """
         try:
+            # Get the appropriate engine
+            tts_engine = engine or self.get_default_engine()
+            
+            # Handle voice ID mapping for ElevenLabs
+            voice_id = turn.speaker.voice_id
+            if hasattr(tts_engine, 'get_elevenlabs_voice_id'):
+                voice_id = tts_engine.get_elevenlabs_voice_id(voice_id)
+                logger.debug(f"Mapped voice ID {turn.speaker.voice_id} to {voice_id} for ElevenLabs")
+            
             # Create voice configuration from speaker
             voice_config = VoiceConfig(
-                voice_id=turn.speaker.voice_id,
+                voice_id=voice_id,
                 language="en",  # Default to English
                 speed=1.0,      # Default speed
                 pitch=1.0,      # Default pitch
@@ -201,4 +214,3 @@ class TTSService:
         except Exception as e:
             logger.error(f"Failed to synthesize turn for {turn.speaker.name}: {e}")
             return None
-        

@@ -11,7 +11,7 @@ from rich.prompt import Prompt
 
 from ..config import settings
 from ..storage.document_store import DocumentStore
-from ..storage.conversation import ConversationStore
+from ..storage.conversation.store import ConversationStore
 from ..storage.json_storage import JSONStorage
 from ..services.podcast_generator import PodcastGenerator
 from ..services.content_analyzer import ContentAnalyzer
@@ -19,8 +19,9 @@ from ..services.conversation import ConversationGenerator
 from ..services.tts import TTSService, TTSProvider, create_engine
 from ..services.audio import AudioProcessor
 from ..services.llm import LLMProvider
-from .model_config import ModelConfig
-from .commands import execute_command
+from .services.model_config import ModelConfig
+from .commands import execute_command, registry
+from .commands.podcast_commands import PodcastCommands, register_commands
 
 logger = logging.getLogger(__name__)
 
@@ -42,25 +43,27 @@ class AsyncApp:
         
         logger.info("AsyncApp initialization complete")
     
-    def _initialize_services(self) -> None:
+    def _initialize_services(self):
         """Initialize all services."""
         try:
-            logger.info("Initializing services...")
-            
-            # Use path manager
+            # Set up paths
             self.paths = settings.paths
             
             # Initialize storage with standard locations
             self.storage = JSONStorage(self.paths.get_path("data"))
-            self.doc_store = DocumentStore(self.paths.get_db_path("documents"))
-            self.conv_store = ConversationStore(self.paths.get_db_path("conversations"))
             
             # Get API keys
             api_keys = self._get_api_keys()
             
+            # Create document store
+            self.doc_store = DocumentStore(settings.paths.get_db_path("documents"))
+            
+            # Create conversation store
+            self.conv_store = ConversationStore(settings.paths.get_db_path("conversations"))
+            
             # Create content analyzer
             self.content_analyzer = ContentAnalyzer(
-                self.doc_store,
+                doc_store=self.doc_store,
                 llm_provider=self.model_config.llm_provider,
                 llm_model=self.model_config.llm_model,
                 api_key=api_keys.get("openai")
@@ -79,7 +82,7 @@ class AsyncApp:
             # Create TTS engine if needed
             if self.model_config.tts_type != TTSProvider.SYSTEM:
                 tts_engine = create_engine(
-                    provider=self.model_config.tts_provider,
+                    provider=self.model_config.tts_type,
                     model_name=self.model_config.tts_model,
                     api_key=self._get_tts_api_key()
                 )
@@ -90,21 +93,50 @@ class AsyncApp:
             self.audio_processor = AudioProcessor()
             
             # Create podcast generator
-            self.podcast_generator = PodcastGenerator(
-                self.doc_store,
-                self.content_analyzer,
-                self.conversation_gen,
-                self.tts_service,
-                self.audio_processor
+            self.podcast_gen = PodcastGenerator(
+                doc_store=self.doc_store,
+                content_analyzer=self.content_analyzer,
+                conversation_gen=self.conversation_gen,
+                tts_service=self.tts_service,
+                audio_processor=self.audio_processor
             )
+            
+            # Create podcast commands with our services
+            self.podcast_commands = PodcastCommands(
+                conv_store=self.conv_store,
+                doc_store=self.doc_store,
+                podcast_gen=self.podcast_gen,
+                output_dir=settings.paths.get_path("output")
+            )
+            
+            # Share background tasks with podcast commands
+            self.conversation_tasks = self.podcast_commands.conversation_tasks
+            
+            # Update the command registry with our podcast generator
+            from .commands import registry
+            if hasattr(registry, 'podcast_commands'):
+                # Update the existing podcast commands with our podcast generator
+                registry.podcast_commands.podcast_gen = self.podcast_gen
+                logger.info("Updated command registry with podcast generator")
+            else:
+                # Re-initialize the commands with our podcast generator
+                from .commands import initialize_commands
+                new_registry = initialize_commands(self.podcast_gen)
+                
+                # Copy all commands from the new registry to the existing one
+                for command_name, command in new_registry.commands.items():
+                    registry.commands[command_name] = command
+                
+                for command_name, subcommands in new_registry.subcommands.items():
+                    registry.subcommands[command_name] = subcommands
+                
+                logger.info("Re-initialized command registry with podcast generator")
             
             logger.info("Services initialized successfully")
             
         except Exception as e:
             logger.error(f"Error initializing services: {e}")
-            if self.debug:
-                logger.error(traceback.format_exc())
-            raise RuntimeError(f"Failed to initialize services: {e}")
+            raise
     
     def _get_api_keys(self) -> Dict[str, str]:
         """Get API keys based on configuration."""
@@ -152,41 +184,29 @@ class AsyncApp:
             
     def _print_welcome(self) -> None:
         """Print welcome message and configuration."""
-        self.console.print("[bold green]Podgen - AI Podcast Generator[/bold green]")
-        self.console.print(f"[green]Using configuration directory: {settings.podgen_dir}[/green]")
-        self.console.print(f"[green]Output files will be saved to: {self.model_config.output_dir}[/green]")
-        self.console.print()
+        # Suppress welcome messages - only log them
+        logger.info("Podgen - AI Podcast Generator")
+        logger.info(f"Using configuration directory: {settings.podgen_dir}")
+        logger.info(f"Output files will be saved to: {self.model_config.output_dir}")
         
-        self.console.print("[green]Active Model Configuration:[/green]")
-        self.console.print(f"LLM: {self.model_config.llm_type} ({self.model_config.llm_model})")
-        self.console.print(f"TTS: {self.model_config.tts_type}", end="")
-        if self.model_config.tts_model:
-            self.console.print(f" ({self.model_config.tts_model})")
-        self.console.print()
-        
-        # Show some basic commands
-        self.console.print("[green]Quick Start:[/green]")
-        self.console.print("  /add source <file>       - Add a document")
-        self.console.print("  /add conversation        - Generate a podcast")
-        self.console.print("  /help                    - Show all commands")
-        self.console.print()
+        logger.info(f"LLM: {self.model_config.llm_type} ({self.model_config.llm_model})")
+        logger.info(f"TTS: {self.model_config.tts_type} {self.model_config.tts_model if self.model_config.tts_model else ''}")
     
     async def run_interactive(self, input_text: Optional[str] = None) -> None:
         """Run interactive CLI session."""
         try:
-            # Print welcome message
+            # Log welcome message instead of printing it
             self._print_welcome()
             
             # Store initial input text
             current_text = input_text
             
-            # Main command loop
+            # Main interaction loop
             while True:
                 try:
-                    # Clean up completed background tasks
-                    self._cleanup_background_tasks()
+                    # Process any text we have
+                    text_to_process = None
                     
-                    # Get input text
                     if current_text:
                         text_to_process = current_text
                         current_text = None  # Clear for next iteration
@@ -199,13 +219,25 @@ class AsyncApp:
                     
                     # Process input
                     if text_to_process.startswith('/'):
-                        # Execute command
-                        result = await execute_command(self.console, text_to_process)
-                        
-                        # Check if exit command
-                        if result == "EXIT":
-                            self.console.print("Goodbye!")
-                            break
+                        try:
+                            # Execute command
+                            result = await execute_command(self.console, text_to_process)
+                            
+                            # Check if exit command
+                            if result == "EXIT":
+                                # Wait for any background tasks to complete before exiting
+                                if self.conversation_tasks:
+                                    self.console.print("[yellow]Waiting for background tasks to complete...")
+                                    for task_id, task in list(self.conversation_tasks.items()):
+                                        if not task.done():
+                                            self.console.print(f"[yellow]Task for conversation {task_id} is still running")
+                                
+                                self.console.print("Goodbye!")
+                                break
+                        except Exception as e:
+                            logger.error(f"Error executing command: {e}")
+                            if self.debug:
+                                self.console.print_exception()
                     else:
                         # Non-command input (for future expansion)
                         self.console.print("[yellow]Please enter a command starting with '/'")
@@ -226,4 +258,3 @@ class AsyncApp:
             self.console.print(f"[red]Error: {str(e)}")
             if self.debug:
                 self.console.print_exception()
-                

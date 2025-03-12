@@ -166,7 +166,8 @@ class ConversationStore:
         conv_id: int,
         progress: float,
         transcript: Optional[str] = None,
-        audio_path: Optional[Path] = None
+        audio_path: Optional[Path] = None,
+        metadata: Optional[Dict[str, Any]] = None
     ) -> None:
         """Update generation progress."""
         with sqlite3.connect(self.db_path) as conn:
@@ -182,6 +183,10 @@ class ConversationStore:
             if audio_path is not None:
                 updates.append("audio_path = ?")
                 params.append(str(audio_path))
+            
+            if metadata is not None:
+                updates.append("metadata = ?")
+                params.append(json.dumps(metadata))
             
             if progress >= 1.0:
                 updates.append("status = ?")
@@ -262,4 +267,3 @@ class ConversationStore:
             c = conn.cursor()
             c.execute("DELETE FROM conversations WHERE id = ?", (conv_id,))
             return c.rowcount > 0
-
