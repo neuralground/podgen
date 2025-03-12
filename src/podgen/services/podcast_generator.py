@@ -98,61 +98,57 @@ class PodcastGenerator:
             
             report_progress('analysis', 1.0, 0.2)
             
-            # 2. Generate conversation (30%)
+# 2. Generate conversation (30%)
             if debug:
                 logger.debug("Stage 2 - Conversation Generation")
             report_progress('conversation', 0.0, 0.3)
             
             try:
-                # Add comprehensive metadata to config
-                if not config:
-                    config = {}
-                
-                # Get TTS engine details
-                tts_engine = self.tts_service.get_default_engine() if hasattr(self.tts_service, 'get_default_engine') else None
-                tts_provider = "Unknown"
-                tts_model = "Unknown"
-                
-                if tts_engine:
-                    tts_provider = tts_engine.__class__.__name__
-                    if hasattr(tts_engine, 'model_name'):
-                        tts_model = tts_engine.model_name
-                    elif hasattr(tts_engine, 'model'):
-                        tts_model = tts_engine.model
-                
-                # LLM configuration
-                config.update({
-                    'document_ids': doc_ids,
-                    'llm_provider': analysis['llm_provider'],
-                    'llm_model': analysis['llm_model'],
-                    'llm_temperature': getattr(self.analyzer.llm, 'temperature', 0.7),
-                    'llm_max_tokens': getattr(self.analyzer.llm, 'max_tokens', 2000),
-                    
-                    # TTS configuration
-                    'tts_provider': tts_provider,
-                    'tts_model': tts_model,
-                    'sample_rate': getattr(self.tts_service, 'sample_rate', 44100),
-                    'output_format': getattr(self.tts_service, 'format', 'wav'),
-                    
-                    # Generation settings
-                    'device': getattr(self.tts_service, 'device', 'cpu'),
-                })
-
+                # Generate dialogue with normal settings
                 dialogue = await self.conversation.generate_dialogue(
                     analysis,
                     config
                 )
+                
                 if not dialogue or not dialogue.turns:
                     raise ValueError("Dialogue generation returned no results")
+                
                 if debug:
                     logger.debug(f"Generated {len(dialogue.turns)} dialogue turns")
-            except Exception as e:
-                if debug:
-                    logger.debug(f"Dialogue generation failed: {str(e)}")
-                raise
+            except ValueError as e:
+                # Fallback for dialogue generation errors
+                logger.warning(f"Primary dialogue generation failed: {e}")
+                
+                # Only attempt fallback for specific errors
+                if "Failed to generate valid conversation" in str(e) or "dialogue generation returned no results" in str(e).lower():
+                    logger.info("Attempting fallback dialogue generation with simplified settings")
+                    
+                    # Simplify config for fallback attempt
+                    fallback_config = config.copy()
+                    fallback_config["style"] = "casual"  # Switch to casual style
+                    fallback_config["target_duration"] = min(15, config.get("target_duration", 15))  # Reduce length if needed
+                    
+                    try:
+                        # Try with fallback config
+                        dialogue = await self.conversation.generate_dialogue(
+                            analysis,
+                            fallback_config
+                        )
+                        
+                        if not dialogue or not dialogue.turns:
+                            raise ValueError("Fallback dialogue generation failed to produce valid results")
+                            
+                        logger.info(f"Fallback dialogue generation succeeded with {len(dialogue.turns)} turns")
+                    except Exception as fallback_error:
+                        # Re-raise with more context
+                        logger.error(f"Fallback dialogue generation also failed: {fallback_error}")
+                        raise ValueError(f"Dialogue generation failed after fallback attempt") from e
+                else:
+                    # Re-raise original error if not specifically a dialogue validation issue
+                    raise
             
             report_progress('conversation', 1.0, 0.3)
-            
+
             # Build transcript
             transcript = self._format_transcript(dialogue)
             if debug:

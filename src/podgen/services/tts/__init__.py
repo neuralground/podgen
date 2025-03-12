@@ -47,17 +47,22 @@ DEFAULT_MODELS = {
 def create_engine(
     provider: TTSProvider,
     model_name: Optional[str] = None,
+    api_key: Optional[str] = None,
     **kwargs
 ) -> Optional[TTSEngine]:
     """Create appropriate TTS engine based on provider."""
     if provider not in PROVIDER_MAP:
         return None
-        
+
     engine_class = PROVIDER_MAP[provider]
     if not model_name and provider in DEFAULT_MODELS:
         model_name = DEFAULT_MODELS[provider]
-        
-    return engine_class(model_name=model_name, **kwargs)
+
+    # Only pass api_key to cloud providers
+    if provider in [TTSProvider.ELEVENLABS, TTSProvider.OPENAI]:
+        return engine_class(model_name=model_name, api_key=api_key, **kwargs)
+    else:
+        return engine_class(model_name=model_name, **kwargs)
 
 __all__ = [
     # Base classes

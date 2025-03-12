@@ -72,8 +72,12 @@ class ConversationGenerator:
             # Start with shorter target for first attempt
             initial_target = max(target_words * 0.8, 500)  # Start with 80% of target
             current_target = initial_target
-            max_attempts = 5  # Increased from 3 to 5 attempts
+            max_attempts = 5  # Five attempts
             current_temperature = 0.7
+            
+            # Track the best attempt
+            best_dialogue = None
+            best_score = 0  # Score based on how close we are to requirements
             
             for attempt in range(max_attempts):
                 try:
@@ -120,11 +124,22 @@ class ConversationGenerator:
                     total_words = 0
                     used_speakers = set()
                     
-                    # Adjust validation thresholds based on model
+                    # Adjust validation thresholds based on model and target length
                     is_o1_model = hasattr(self.llm, 'model') and str(self.llm.model).startswith('o1')
-                    min_words_per_turn = 30 if is_o1_model else 75  # Even more lenient for o1
-                    min_turn_ratio = 0.5 if is_o1_model else 0.8    # More lenient completion threshold
-                    max_sequential_same_speaker = 2                  # Prevent monologues
+                    
+                    # Dynamic thresholds based on target duration/length
+                    target_minutes = config.get('target_duration', 15)
+                    is_long_podcast = target_minutes >= 25
+                    
+                    # Adjust thresholds for longer podcasts - be more lenient
+                    if is_long_podcast:
+                        min_words_per_turn = 40 if is_o1_model else 60
+                        min_turn_ratio = 0.4 if is_o1_model else 0.6
+                    else:
+                        min_words_per_turn = 30 if is_o1_model else 75
+                        min_turn_ratio = 0.5 if is_o1_model else 0.8
+                    
+                    max_sequential_same_speaker = 2  # Prevent monologues
                     
                     current_speaker = None
                     same_speaker_count = 0
@@ -181,10 +196,34 @@ class ConversationGenerator:
                     logger.info(f"Target words: {target_words}")
                     logger.info(f"Speakers used: {len(used_speakers)}/{len(speakers)}")
                     
-                    # Check if we've met our requirements
-                    if (len(turns) >= optimal_turns * min_turn_ratio and
-                        total_words >= target_words * min_turn_ratio and
-                        len(used_speakers) == len(speakers)):
+                    # Check if we've met our requirements with relaxed criteria for longer podcasts
+                    meets_turn_requirement = len(turns) >= optimal_turns * min_turn_ratio
+                    
+                    # For longer podcasts, prioritize word count over turn count
+                    if target_minutes >= 25:
+                        meets_word_requirement = total_words >= target_words * 0.75  # 75% of target is acceptable
+                        # For longer podcasts, don't fail just because of turn count
+                        meets_turn_requirement = True  
+                    else:
+                        meets_word_requirement = total_words >= target_words * min_turn_ratio
+                    
+                    meets_speaker_requirement = len(used_speakers) == len(speakers)
+                    
+                    # Calculate a score for this attempt (how close it is to requirements)
+                    turn_score = len(turns) / (optimal_turns * min_turn_ratio) if optimal_turns > 0 else 0
+                    word_score = total_words / (target_words * min_turn_ratio) if target_words > 0 else 0
+                    speaker_score = len(used_speakers) / len(speakers) if speakers else 0
+                    
+                    # Weighted score (prioritize words and speakers over turns)
+                    attempt_score = (word_score * 0.5) + (speaker_score * 0.3) + (turn_score * 0.2)
+                    
+                    # Store this as the best attempt if it has the highest score
+                    if turns and attempt_score > best_score:
+                        best_dialogue = Dialogue(turns=turns)
+                        best_score = attempt_score
+                        logger.info(f"New best attempt with score {best_score:.2f}")
+                    
+                    if meets_word_requirement and meets_speaker_requirement and meets_turn_requirement:
                         logger.info(f"Generated valid conversation: {len(turns)} turns, {total_words} words")
                         return Dialogue(turns=turns)
                     else:
@@ -208,6 +247,11 @@ class ConversationGenerator:
                         raise
                     continue
             
+            # After all attempts, use the best one if it exists
+            if best_dialogue and best_dialogue.turns:
+                logger.info(f"Using best attempt with score {best_score:.2f}")
+                return best_dialogue
+                
             raise ValueError(f"Failed to generate valid conversation after {max_attempts} attempts")
             
         except Exception as e:

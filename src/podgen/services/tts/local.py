@@ -46,28 +46,56 @@ class CoquiTTSEngine(TTSEngine):
     async def load_model(self) -> bool:
         """Load Coqui TTS model."""
         try:
-            from TTS.api import TTS
+            # Import TTS differently to avoid unpacking error
+            import TTS
+            from TTS.utils.manage import ModelManager
+            from TTS.utils.synthesizer import Synthesizer
             
             if self.debug:
                 logger.info(f"Loading Coqui TTS model: {self.model_name}")
-                
-            self.model = await asyncio.get_event_loop().run_in_executor(
+            
+            # Use model manager to download and get model path
+            model_manager = await asyncio.get_event_loop().run_in_executor(
                 self._executor,
-                lambda: TTS(self.model_name).to(self.device)
+                lambda: ModelManager()
             )
+            
+            # Get model path
+            model_path = await asyncio.get_event_loop().run_in_executor(
+                self._executor,
+                lambda: model_manager.download_model(self.model_name)
+            )
+            
+            # Create synthesizer directly, which avoids the unpacking error
+            synthesizer = await asyncio.get_event_loop().run_in_executor(
+                self._executor,
+                lambda: Synthesizer(
+                    tts_checkpoint=model_path,
+                    tts_config_path=None,  # Auto-find in the model directory
+                    tts_speakers_file=None,  # Auto-find in the model directory
+                    tts_languages_file=None,  # Auto-find in the model directory
+                    vocoder_checkpoint=None,
+                    vocoder_config=None,
+                    encoder_checkpoint="",
+                    encoder_config="",
+                    use_cuda=self.device == "cuda"
+                )
+            )
+            
+            # Store synthesizer as our model
+            self.model = synthesizer
             self.loaded = True
             
             if self.debug:
                 logger.info(f"Successfully loaded Coqui TTS model: {self.model_name}")
                 logger.info(f"Using device: {self.device}")
-                logger.info(f"Available speakers: {self.model.speakers}")
             
             return True
             
         except Exception as e:
             logger.error(f"Failed to load Coqui TTS model: {e}")
             return False
-    
+
     async def synthesize(
         self,
         text: str,
@@ -97,18 +125,43 @@ class CoquiTTSEngine(TTSEngine):
                 logger.info(f"Synthesizing text with speaker {speaker}")
                 logger.info(f"Text length: {len(text)} chars")
             
-            # Run synthesis in thread pool
-            wav = await asyncio.get_event_loop().run_in_executor(
-                self._executor,
-                lambda: self.model.tts(
-                    text=text,
-                    speaker=speaker
+            # Run synthesis in thread pool - different approach based on model type
+            wav = None
+            if hasattr(self.model, 'tts'):
+                # Using old API style
+                wav = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    lambda: self.model.tts(
+                        text=text,
+                        speaker=speaker
+                    )
                 )
-            )
+            elif hasattr(self.model, 'tts_with_vc'):
+                # Using new Synthesizer API
+                wav = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    lambda: self.model.tts(text, speaker_name=speaker)[0]
+                )
+            else:
+                # Last resort - try direct synthesis
+                wav = await asyncio.get_event_loop().run_in_executor(
+                    self._executor,
+                    lambda: self.model.synthesize(text, speaker_name=speaker)[0]
+                )
+            
+            if wav is None:
+                logger.error("Speech synthesis returned None")
+                return False
             
             # Save audio with correct sample rate
             import soundfile as sf
-            sf.write(str(output_path), wav, self.model.synthesizer.output_sample_rate)
+            sample_rate = 22050  # Default value
+            if hasattr(self.model, 'output_sample_rate'):
+                sample_rate = self.model.output_sample_rate
+            elif hasattr(self.model, 'synthesizer') and hasattr(self.model.synthesizer, 'output_sample_rate'):
+                sample_rate = self.model.synthesizer.output_sample_rate
+                
+            sf.write(str(output_path), wav, sample_rate)
             
             if output_path.exists() and output_path.stat().st_size > 0:
                 if self.debug:
@@ -125,7 +178,7 @@ class CoquiTTSEngine(TTSEngine):
                 import traceback
                 logger.error(traceback.format_exc())
             return False
-        
+    
 class BarkEngine(TTSEngine):
     """Local TTS using Bark text-to-speech."""
     
